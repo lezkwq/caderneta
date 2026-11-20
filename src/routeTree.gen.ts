@@ -16,6 +16,8 @@ import { Route as EsqueciSenhaRouteImport } from './routes/esqueci-senha'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as RedefinirSenhaRouteImport } from './routes/redefinir-senha'
 import { Route as AuthenticatedNewRouteImport } from './routes/_authenticated/new'
+import { Route as AuthenticatedBuscaIdRouteImport } from './routes/_authenticated/busca.$id'
+import { Route as ApiPublicProcessarFilaRouteImport } from './routes/api/public/processar-fila'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -51,6 +53,16 @@ const AuthenticatedNewRoute = AuthenticatedNewRouteImport.update({
   path: '/new',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedBuscaIdRoute = AuthenticatedBuscaIdRouteImport.update({
+  id: '/busca/$id',
+  path: '/busca/$id',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const ApiPublicProcessarFilaRoute = ApiPublicProcessarFilaRouteImport.update({
+  id: '/api/public/processar-fila',
+  path: '/api/public/processar-fila',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -59,6 +71,8 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/redefinir-senha': typeof RedefinirSenhaRoute
   '/new': typeof AuthenticatedNewRoute
+  '/busca/$id': typeof AuthenticatedBuscaIdRoute
+  '/api/public/processar-fila': typeof ApiPublicProcessarFilaRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -67,6 +81,8 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/redefinir-senha': typeof RedefinirSenhaRoute
   '/new': typeof AuthenticatedNewRoute
+  '/busca/$id': typeof AuthenticatedBuscaIdRoute
+  '/api/public/processar-fila': typeof ApiPublicProcessarFilaRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -77,6 +93,8 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/redefinir-senha': typeof RedefinirSenhaRoute
   '/_authenticated/new': typeof AuthenticatedNewRoute
+  '/_authenticated/busca/$id': typeof AuthenticatedBuscaIdRoute
+  '/api/public/processar-fila': typeof ApiPublicProcessarFilaRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -87,6 +105,8 @@ export interface FileRouteTypes {
     | '/login'
     | '/redefinir-senha'
     | '/new'
+    | '/busca/$id'
+    | '/api/public/processar-fila'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -95,6 +115,8 @@ export interface FileRouteTypes {
     | '/login'
     | '/redefinir-senha'
     | '/new'
+    | '/busca/$id'
+    | '/api/public/processar-fila'
   id:
     | '__root__'
     | '/'
@@ -104,6 +126,8 @@ export interface FileRouteTypes {
     | '/login'
     | '/redefinir-senha'
     | '/_authenticated/new'
+    | '/_authenticated/busca/$id'
+    | '/api/public/processar-fila'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -113,6 +137,7 @@ export interface RootRouteChildren {
   EsqueciSenhaRoute: typeof EsqueciSenhaRoute
   LoginRoute: typeof LoginRoute
   RedefinirSenhaRoute: typeof RedefinirSenhaRoute
+  ApiPublicProcessarFilaRoute: typeof ApiPublicProcessarFilaRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -166,15 +191,31 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedNewRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/busca/$id': {
+      id: '/_authenticated/busca/$id'
+      path: '/busca/$id'
+      fullPath: '/busca/$id'
+      preLoaderRoute: typeof AuthenticatedBuscaIdRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/api/public/processar-fila': {
+      id: '/api/public/processar-fila'
+      path: '/api/public/processar-fila'
+      fullPath: '/api/public/processar-fila'
+      preLoaderRoute: typeof ApiPublicProcessarFilaRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 interface AuthenticatedRouteRouteChildren {
   AuthenticatedNewRoute: typeof AuthenticatedNewRoute
+  AuthenticatedBuscaIdRoute: typeof AuthenticatedBuscaIdRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedNewRoute: AuthenticatedNewRoute,
+  AuthenticatedBuscaIdRoute: AuthenticatedBuscaIdRoute,
 }
 
 const AuthenticatedRouteRouteWithChildren =
@@ -187,6 +228,7 @@ const rootRouteChildren: RootRouteChildren = {
   EsqueciSenhaRoute: EsqueciSenhaRoute,
   LoginRoute: LoginRoute,
   RedefinirSenhaRoute: RedefinirSenhaRoute,
+  ApiPublicProcessarFilaRoute: ApiPublicProcessarFilaRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

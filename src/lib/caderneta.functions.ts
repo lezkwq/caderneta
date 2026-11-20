@@ -1,0 +1,60 @@
+import { createServerFn } from "@tanstack/react-start";
+import { z } from "zod";
+import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { cnpjValido, soDigitos } from "@/lib/br";
+
+const texto = (max: number) => z.string().trim().min(1).max(max);
+
+export const iniciarBusca = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({
+    cidade: texto(80), estado: texto(40), pais: texto(40), nicho: texto(80),
+    quantidade: z.number().int().min(1).max(100),
+  }).parse(d))
+  .handler(async ({ data, context }) => {
+    const s = await import("@/lib/caderneta.server");
+    try { return { id: await s.criarBuscaMaps(context.userId, data), erro: null }; }
+    catch (e) { return { id: null, erro: e instanceof Error ? e.message : "Falha ao iniciar" }; }
+  });
+
+const empresaSchema = z.object({
+  nome: texto(200),
+  cidade: z.string().trim().max(80).optional(),
+  cnpj: z.string().trim().max(20).optional().refine((v) => !v || cnpjValido(v), "CNPJ inválido"),
+  links: z.array(z.string().trim().url().max(500).refine((u) => /^https?:\/\//i.test(u), "Use http ou https")).max(6),
+  pessoa: z.string().trim().max(120).optional(),
+});
+
+export const iniciarManual = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ empresas: z.array(empresaSchema).min(1).max(100) }).parse(d))
+  .handler(async ({ data, context }) => {
+    const s = await import("@/lib/caderneta.server");
+    try { return { id: await s.criarBuscaManual(context.userId, data.empresas), erro: null }; }
+    catch (e) { return { id: null, erro: e instanceof Error ? e.message : "Falha ao iniciar" }; }
+  });
+
+export const informarCnpj = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ leadId: z.string().uuid(), cnpj: z.string().refine(cnpjValido, "CNPJ inválido") }).parse(d))
+  .handler(async ({ data, context }) => {
+    const s = await import("@/lib/caderneta.server");
+    await s.definirCnpjManual(context.userId, data.leadId, soDigitos(data.cnpj));
+    return { ok: true };
+  });
+
+export const processarAgora = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async () => {
+    const s = await import("@/lib/caderneta.server");
+    await s.processarFila();
+    return s.previsaoFila();
+  });
+
+export const infoSistema = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const s = await import("@/lib/caderneta.server");
+    const [apify, fila, hoje] = await Promise.all([s.testarApify(), s.previsaoFila(), s.contarBuscasHoje(context.userId)]);
+    return { apify, fila, buscasHoje: hoje };
+  });
