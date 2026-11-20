@@ -3,9 +3,12 @@
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { cnpjValido, extrairCnpjs, nomeDonoMei, normalizarTelefone, normalizarTexto, soDigitos } from "@/lib/br";
 import { calcularScore, type Fonte } from "@/lib/score";
+import type { Database } from "@/integrations/supabase/types";
 import { analisarHtml, baixarPagina, urlPermitida } from "@/lib/site-fetch.server";
 
 const db = supabaseAdmin;
+type TarefaUpd = Database["public"]["Tables"]["tarefas"]["Update"];
+type LeadUpd = Database["public"]["Tables"]["leads"]["Update"];
 type Json = string | number | boolean | null | Json[] | { [k: string]: Json };
 
 // ───────────── Configuração ─────────────
@@ -58,7 +61,7 @@ async function enfileirar(userId: string, leadId: string, tipo: "site" | "cnpj" 
 }
 async function concluirTarefa(id: string) { await db.from("tarefas").update({ status: "feito" }).eq("id", id); }
 async function adiarTarefa(id: string, seg: number, contaTentativa = true) {
-  const upd: Record<string, unknown> = { status: "pendente", reservado_em: null, executar_apos: new Date(Date.now() + seg * 1000).toISOString() };
+  const upd: TarefaUpd = { status: "pendente", reservado_em: null, executar_apos: new Date(Date.now() + seg * 1000).toISOString() };
   if (!contaTentativa) {
     const { data } = await db.from("tarefas").select("tentativas").eq("id", id).single();
     upd["tentativas"] = Math.max(0, (data?.tentativas ?? 1) - 1);
@@ -122,7 +125,7 @@ async function atualizarEstadoLead(leadId: string) {
   const { data: lead } = await db.from("leads").select("busca_id, cnpj, cnpj_status").eq("id", leadId).maybeSingle();
   if (!lead) return;
   const pend = (count ?? 0) > 0;
-  const upd: Record<string, unknown> = { status: pend ? "processando" : "concluido" };
+  const upd: LeadUpd = { status: pend ? "processando" : "concluido" };
   if (!pend && !lead.cnpj && lead.cnpj_status === "pendente") upd["cnpj_status"] = "nao_encontrado";
   await db.from("leads").update(upd).eq("id", leadId);
   await atualizarEstadoBusca(lead.busca_id);
@@ -200,7 +203,7 @@ async function mesclarItensManual(b: { id: string; user_id: string }, itens: Ite
     const alvo = (leads ?? []).find((l) => l.maps_url && (normalizarTexto(l.nome).includes(normalizarTexto(it.title)) || normalizarTexto(it.title).includes(normalizarTexto(l.nome))))
       ?? (leads ?? []).find((l) => l.maps_url && it.searchPageUrl && l.maps_url === it.searchPageUrl);
     if (!alvo) continue;
-    const upd: Record<string, unknown> = { endereco: it.address ?? null, logradouro: it.street ?? null, cep: it.postalCode ?? null, place_id: it.placeId ?? null, categoria: it.categoryName ?? null };
+    const upd: LeadUpd = { endereco: it.address ?? null, logradouro: it.street ?? null, cep: it.postalCode ?? null, place_id: it.placeId ?? null, categoria: it.categoryName ?? null };
     if (it.city) upd["cidade"] = it.city;
     if (it.state) upd["uf"] = ufDeNome(it.state);
     const site = !alvo.site && it.website && urlPermitida(it.website) ? it.website : null;
