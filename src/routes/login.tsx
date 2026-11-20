@@ -30,8 +30,8 @@ function Intro() {
     { icon: Phone, t: "Mostra o telefone mais confiável" },
   ];
   return (
-    <div className="mb-8">
-      <h1 className="text-[32px] leading-tight md:text-[48px]">Acha o telefone certo do dono de empresas locais.</h1>
+    <div>
+      <h1 className="max-w-[620px] text-[28px] leading-[1.15] tracking-tight lg:text-[48px]">Acha o telefone certo do dono de empresas locais.</h1>
       <ul className="mt-5 space-y-2">
         {itens.map(({ icon: I, t }) => (
           <li key={t} className="flex items-center gap-2 text-sm"><I className="size-4 text-heading" aria-hidden />{t}</li>
