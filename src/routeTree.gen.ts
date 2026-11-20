@@ -15,6 +15,9 @@ import { Route as CadastroRouteImport } from './routes/cadastro'
 import { Route as EsqueciSenhaRouteImport } from './routes/esqueci-senha'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as RedefinirSenhaRouteImport } from './routes/redefinir-senha'
+import { Route as AuthenticatedConfiguracoesRouteImport } from './routes/_authenticated/configuracoes'
+import { Route as AuthenticatedHistoricoRouteImport } from './routes/_authenticated/historico'
+import { Route as AuthenticatedManualRouteImport } from './routes/_authenticated/manual'
 import { Route as AuthenticatedNewRouteImport } from './routes/_authenticated/new'
 import { Route as AuthenticatedBuscaIdRouteImport } from './routes/_authenticated/busca.$id'
 import { Route as ApiPublicProcessarFilaRouteImport } from './routes/api/public/processar-fila'
@@ -48,6 +51,22 @@ const RedefinirSenhaRoute = RedefinirSenhaRouteImport.update({
   path: '/redefinir-senha',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthenticatedConfiguracoesRoute =
+  AuthenticatedConfiguracoesRouteImport.update({
+    id: '/configuracoes',
+    path: '/configuracoes',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedHistoricoRoute = AuthenticatedHistoricoRouteImport.update({
+  id: '/historico',
+  path: '/historico',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedManualRoute = AuthenticatedManualRouteImport.update({
+  id: '/manual',
+  path: '/manual',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedNewRoute = AuthenticatedNewRouteImport.update({
   id: '/new',
   path: '/new',
@@ -70,6 +89,9 @@ export interface FileRoutesByFullPath {
   '/esqueci-senha': typeof EsqueciSenhaRoute
   '/login': typeof LoginRoute
   '/redefinir-senha': typeof RedefinirSenhaRoute
+  '/configuracoes': typeof AuthenticatedConfiguracoesRoute
+  '/historico': typeof AuthenticatedHistoricoRoute
+  '/manual': typeof AuthenticatedManualRoute
   '/new': typeof AuthenticatedNewRoute
   '/busca/$id': typeof AuthenticatedBuscaIdRoute
   '/api/public/processar-fila': typeof ApiPublicProcessarFilaRoute
@@ -80,6 +102,9 @@ export interface FileRoutesByTo {
   '/esqueci-senha': typeof EsqueciSenhaRoute
   '/login': typeof LoginRoute
   '/redefinir-senha': typeof RedefinirSenhaRoute
+  '/configuracoes': typeof AuthenticatedConfiguracoesRoute
+  '/historico': typeof AuthenticatedHistoricoRoute
+  '/manual': typeof AuthenticatedManualRoute
   '/new': typeof AuthenticatedNewRoute
   '/busca/$id': typeof AuthenticatedBuscaIdRoute
   '/api/public/processar-fila': typeof ApiPublicProcessarFilaRoute
@@ -92,6 +117,9 @@ export interface FileRoutesById {
   '/esqueci-senha': typeof EsqueciSenhaRoute
   '/login': typeof LoginRoute
   '/redefinir-senha': typeof RedefinirSenhaRoute
+  '/_authenticated/configuracoes': typeof AuthenticatedConfiguracoesRoute
+  '/_authenticated/historico': typeof AuthenticatedHistoricoRoute
+  '/_authenticated/manual': typeof AuthenticatedManualRoute
   '/_authenticated/new': typeof AuthenticatedNewRoute
   '/_authenticated/busca/$id': typeof AuthenticatedBuscaIdRoute
   '/api/public/processar-fila': typeof ApiPublicProcessarFilaRoute
@@ -104,6 +132,9 @@ export interface FileRouteTypes {
     | '/esqueci-senha'
     | '/login'
     | '/redefinir-senha'
+    | '/configuracoes'
+    | '/historico'
+    | '/manual'
     | '/new'
     | '/busca/$id'
     | '/api/public/processar-fila'
@@ -114,6 +145,9 @@ export interface FileRouteTypes {
     | '/esqueci-senha'
     | '/login'
     | '/redefinir-senha'
+    | '/configuracoes'
+    | '/historico'
+    | '/manual'
     | '/new'
     | '/busca/$id'
     | '/api/public/processar-fila'
@@ -125,6 +159,9 @@ export interface FileRouteTypes {
     | '/esqueci-senha'
     | '/login'
     | '/redefinir-senha'
+    | '/_authenticated/configuracoes'
+    | '/_authenticated/historico'
+    | '/_authenticated/manual'
     | '/_authenticated/new'
     | '/_authenticated/busca/$id'
     | '/api/public/processar-fila'
@@ -184,6 +221,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RedefinirSenhaRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_authenticated/configuracoes': {
+      id: '/_authenticated/configuracoes'
+      path: '/configuracoes'
+      fullPath: '/configuracoes'
+      preLoaderRoute: typeof AuthenticatedConfiguracoesRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/historico': {
+      id: '/_authenticated/historico'
+      path: '/historico'
+      fullPath: '/historico'
+      preLoaderRoute: typeof AuthenticatedHistoricoRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/manual': {
+      id: '/_authenticated/manual'
+      path: '/manual'
+      fullPath: '/manual'
+      preLoaderRoute: typeof AuthenticatedManualRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/new': {
       id: '/_authenticated/new'
       path: '/new'
@@ -209,11 +267,17 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthenticatedRouteRouteChildren {
+  AuthenticatedConfiguracoesRoute: typeof AuthenticatedConfiguracoesRoute
+  AuthenticatedHistoricoRoute: typeof AuthenticatedHistoricoRoute
+  AuthenticatedManualRoute: typeof AuthenticatedManualRoute
   AuthenticatedNewRoute: typeof AuthenticatedNewRoute
   AuthenticatedBuscaIdRoute: typeof AuthenticatedBuscaIdRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
+  AuthenticatedConfiguracoesRoute: AuthenticatedConfiguracoesRoute,
+  AuthenticatedHistoricoRoute: AuthenticatedHistoricoRoute,
+  AuthenticatedManualRoute: AuthenticatedManualRoute,
   AuthenticatedNewRoute: AuthenticatedNewRoute,
   AuthenticatedBuscaIdRoute: AuthenticatedBuscaIdRoute,
 }

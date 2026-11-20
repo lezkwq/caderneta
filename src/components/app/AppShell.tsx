@@ -63,7 +63,7 @@ export function AppShell({ children, nome }: { children: ReactNode; nome?: strin
   );
 }
 
-export function PageHeader({ title, desc, actions }: { title: string; desc?: string; actions?: ReactNode }) {
+export function PageHeader({ title, desc, actions }: { title: string; desc?: string | undefined; actions?: ReactNode }) {
   return (
     <div className="mb-6 grid grid-cols-1 gap-4 md:flex md:items-end md:justify-between">
       <div className="min-w-0">
