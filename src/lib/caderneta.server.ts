@@ -4,7 +4,7 @@ import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { cnpjValido, extrairCnpjs, nomeDonoMei, normalizarTelefone, normalizarTexto, soDigitos } from "@/lib/br";
 import { calcularScore, type Fonte } from "@/lib/score";
 import type { Database } from "@/integrations/supabase/types";
-import { decidir, ehSiteProprio, limparNome, type CandidatoCnpja } from "@/lib/candidatos";
+import { decidir, ehSiteProprio, extrairCandidatosCnpja, limparNome, type CandidatoCnpja } from "@/lib/candidatos";
 import { analisarHtml, baixarPagina, urlPermitida } from "@/lib/site-fetch.server";
 
 const db = supabaseAdmin;
@@ -537,8 +537,22 @@ export async function saldoCnpja(): Promise<number | null> {
   try {
     const r = await fetch(`${CNPJA}/credit`, { headers: cnpjaHeaders() });
     if (!r.ok) return null;
-    const j = (await r.json()) as { transient?: number; perpetual?: number };
-    return (j.transient ?? 0) + (j.perpetual ?? 0);
+    const j = await r.json();
+    if (typeof j === "number" && Number.isFinite(j) && j >= 0) return j;
+    if (!j || typeof j !== "object" || Array.isArray(j)) return null;
+    const saldo = j as Record<string, unknown>;
+    for (const k of ["remaining", "available", "credits", "credit", "balance", "saldo", "totalRemaining"]) {
+      const v = saldo[k];
+      if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
+    }
+    const temporarios = saldo.transient;
+    const permanentes = saldo.perpetual;
+    if ((typeof temporarios === "number" || typeof permanentes === "number") &&
+      (temporarios === undefined || typeof temporarios === "number") &&
+      (permanentes === undefined || typeof permanentes === "number")) {
+      return (typeof temporarios === "number" ? temporarios : 0) + (typeof permanentes === "number" ? permanentes : 0);
+    }
+    return null;
   } catch { return null; }
 }
 
@@ -578,6 +592,12 @@ async function processarCnpja(tarefa: { id: string; lead_id: string; user_id: st
   };
   if (!lead || lead.cnpj || lead.cnpja_buscado) return fim();
 
+  const { data: estado } = await db.from("api_estado").select("bloqueado_ate").eq("chave", "cnpja").maybeSingle();
+  if (estado?.bloqueado_ate && new Date(estado.bloqueado_ate) > new Date()) {
+    await adiarTarefa(tarefa.id, Math.ceil((new Date(estado.bloqueado_ate).getTime() - Date.now()) / 1000), false);
+    return;
+  }
+
   const termos = limparNome(lead.nome, lead.cidade);
   if (!termos) return fim({ cnpja_buscado: true, cnpj_status: "nao_encontrado", cnpj_motivo: "Nome muito genérico para buscar o CNPJ." });
 
@@ -597,15 +617,41 @@ async function processarCnpja(tarefa: { id: string; lead_id: string; user_id: st
   if (emCache) registros = (emCache.resposta as unknown as { records: CandidatoCnpja[] }).records ?? [];
   else {
     const saldo = await saldoCnpja();
-    if (saldo !== null && saldo < cfg.cnpjaSaldoMinimo) {
-      await db.from("api_estado").update({ bloqueado_ate: new Date(Date.now() + 3600_000).toISOString() }).eq("chave", "cnpja");
-      return fim({ cnpj_status: "nao_encontrado", cnpj_motivo: `Busca por nome pausada: saldo do CNPJá abaixo de ${cfg.cnpjaSaldoMinimo} créditos.` });
+    if (saldo === null) {
+      await db.from("leads").update({ cnpj_status: "na_fila", cnpj_motivo: "Não foi possível consultar o saldo do CNPJá. Nova tentativa em alguns minutos." }).eq("id", lead.id);
+      await adiarTarefa(tarefa.id, 300, false);
+      return;
     }
-    const r = await fetch(`${CNPJA}/office?${q}`, { headers: cnpjaHeaders() });
-    if (r.status === 429) { await adiarTarefa(tarefa.id, Math.max(30, Number(r.headers.get("retry-after")) || 60), false); return; }
-    if (!r.ok) return fim({ cnpja_buscado: true, cnpj_status: "nao_encontrado", cnpj_motivo: `A busca por nome falhou (${r.status}).` });
-    const j = (await r.json()) as { records?: CandidatoCnpja[] };
-    registros = j.records ?? [];
+    if (saldo < cfg.cnpjaSaldoMinimo) {
+      await db.from("api_estado").update({ bloqueado_ate: new Date(Date.now() + 3600_000).toISOString() }).eq("chave", "cnpja");
+      await db.from("leads").update({ cnpj_status: "na_fila", cnpj_motivo: `Busca pausada: o saldo do CNPJá está abaixo de ${cfg.cnpjaSaldoMinimo} créditos.` }).eq("id", lead.id);
+      await adiarTarefa(tarefa.id, 3600, false);
+      return;
+    }
+    // Reserva uma única tentativa paga por lead antes da chamada para evitar duplicidade concorrente.
+    const { data: reservado } = await db.from("leads").update({ cnpja_buscado: true, cnpj_status: "consultando" })
+      .eq("id", lead.id).eq("cnpja_buscado", false).select("id").maybeSingle();
+    if (!reservado) { await concluirTarefa(tarefa.id); await atualizarEstadoLead(lead.id); return; }
+    let r: Response;
+    try { r = await fetch(`${CNPJA}/office?${q}`, { headers: cnpjaHeaders() }); }
+    catch {
+      await fim({ cnpja_buscado: true, cnpj_status: "erro", cnpj_motivo: "Não foi possível concluir a busca de nome no CNPJá. O lead segue com os telefones já encontrados." });
+      return;
+    }
+    if (r.status === 429) {
+      await fim({ cnpja_buscado: true, cnpj_status: "erro", cnpj_motivo: "O CNPJá limitou esta consulta. Não repetimos a busca para evitar cobrança duplicada." });
+      return;
+    }
+    if (!r.ok) return fim({ cnpja_buscado: true, cnpj_status: "erro", cnpj_motivo: `A busca por nome no CNPJá falhou (HTTP ${r.status}).` });
+    let resposta: unknown;
+    try { resposta = await r.json(); }
+    catch {
+      await fim({ cnpja_buscado: true, cnpj_status: "erro", cnpj_motivo: "O CNPJá retornou uma resposta que não pôde ser lida." });
+      return;
+    }
+    const encontrados = extrairCandidatosCnpja(resposta);
+    if (!encontrados) return fim({ cnpja_buscado: true, cnpj_status: "erro", cnpj_motivo: "O CNPJá retornou um formato de resposta inesperado." });
+    registros = encontrados;
     await db.from("cnpja_cache").upsert({ chave, resposta: { records: registros } as unknown as Json });
   }
 

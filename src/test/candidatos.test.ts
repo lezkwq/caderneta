@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decidir, ehSiteProprio, limparNome } from "@/lib/candidatos";
+import { decidir, ehSiteProprio, extrairCandidatosCnpja, limparNome } from "@/lib/candidatos";
 
 describe("Limpeza do nome", () => {
   it("Odontologia Premier - Dentista em Blumenau vira premier", () => expect(limparNome("Odontologia Premier - Dentista em Blumenau", "Blumenau")).toBe("premier"));
@@ -38,6 +38,46 @@ describe("Decisão do candidato (casos reais)", () => {
   it("vários candidatos só pelo nome: pede para escolher", () => {
     const cand = (id: string) => ({ taxId: id, alias: "Premier", mainActivity: { id: 8630504 } });
     expect(decidir({ nome: "Premier", telefones: [] }, [cand("1"), cand("2")], "8630504").tipo).toBe("varios");
+  });
+
+  it("lê uma página no formato OfficeDto documentado pela CNPJá", () => {
+    const resposta = [{
+      taxId: "10898932000157",
+      alias: "Mordent",
+      company: { name: "MORDENT CLINICA ODONTOLOGICA LTDA", members: [] },
+      address: { municipality: 4204608, street: "Rua Coronel Pedro Benedet", number: "363", district: "Centro", city: "Criciúma", state: "SC", zip: "88801-250" },
+      phones: [{ type: "LANDLINE", area: "48", number: "34333100" }],
+      mainActivity: { id: 8630504, text: "Atividade odontológica" },
+      sideActivities: [],
+      status: { id: 2, text: "Ativa" },
+    }];
+    const candidatos = extrairCandidatosCnpja(resposta);
+    expect(candidatos).toHaveLength(1);
+    expect(candidatos?.[0]?.address?.zip).toBe("88801-250");
+    expect(candidatos?.[0]?.phones?.[0]?.area).toBe("48");
+    expect(decidir(
+      { nome: "Mordent Odontologia", cep: "88801250", telefones: ["+554834333100"] },
+      candidatos ?? [],
+      "8630504",
+    ).tipo).toBe("confirmado");
+  });
+
+  it("não confirma endereço ou telefone quando o nome não corresponde", () => {
+    const r = decidir(
+      { nome: "Mordent Odontologia", cep: "88801250", telefones: ["+554834333100"] },
+      [{ taxId: "10898932000157", company: { name: "OUTRA EMPRESA LTDA" }, address: { zip: "88801-250" }, phones: [{ area: "48", number: "34333100" }], status: { id: 2 } }],
+      null,
+    );
+    expect(r.tipo).toBe("provavel");
+  });
+
+  it("descarta estabelecimento inativo mesmo se a API ignorar o filtro", () => {
+    const r = decidir(
+      { nome: "Mordent Odontologia", telefones: [] },
+      [{ taxId: "10898932000157", company: { name: "MORDENT ODONTOLOGIA LTDA" }, status: { id: 8, text: "Baixada" } }],
+      null,
+    );
+    expect(r.tipo).toBe("nenhum");
   });
 });
 

@@ -9,14 +9,15 @@
 ## Existe no código
 - Login, cadastro, recuperação de senha, onboarding, navegação e busca no Google Maps via Apify.
 - Fila com reserva via RPC, processamento incremental, CNPJ por BrasilAPI e fallback cnpj.ws, telefones, score e resultados.
-- CNPJá `/office`, `/credit` e `/zip`, cache de resposta e limpeza/pontuação de candidatos já foram iniciados; ainda não há teste com fixture da resposta documentada nem validação real ponta a ponta.
+- CNPJá `/office`, `/credit` e `/zip`, cache permanente da consulta e limpeza/pontuação de candidatos estão implementados. O parser aceita a página de `OfficeDto` documentada (lista de registros) e a fixture cobre `taxId`, `address`, `phones`, `mainActivity`, `sideActivities` e `status`.
 - Busca opcional por empresas sem site próprio já existe no servidor, mas falta o controle na tela de nova busca.
 - Leitura de até três páginas de site, com timeout e limite de 1 MB; endereços privados literais são bloqueados, mas ainda falta proteção por resolução DNS para evitar SSRF.
 - Suporte de campos para `manual`, `historico` e `configuracoes` existe no banco/servidor, mas as três telas ainda são placeholders.
 
 ## Problemas confirmados / pendências
-- A resposta de `/office` é assumida como `{ records: [...] }` sem fixture baseada na documentação; o saldo desconhecido de `/credit` não impede a busca.
-- A decisão pode confirmar com endereço ou telefone mesmo sem correspondência do nome; estados prováveis e múltiplos candidatos não são apresentados na interface.
+- A confirmação exige nome compatível e telefone ou endereço correspondente; `/credit` falhando ou retornando saldo abaixo de 10 pausa novas pesquisas e evita consulta paga sem saldo conhecido.
+- A tentativa de pesquisa por lead é reservada antes da chamada para evitar pesquisa paga duplicada. Erros de rede, resposta inválida e HTTP 429 encerram aquela tentativa sem repetição.
+- A fixture segue o formato de resposta do contrato oficial; não foi possível validar a chamada ao vivo porque os Secrets do Lovable não estão disponíveis localmente.
 - WhatsApp considera apenas o telefone principal, não o melhor celular; falta o filtro “sem site / só rede social” e o rótulo “telefone da empresa” antes da identificação do dono.
 - /manual precisa formulário e submissão da lista; /historico precisa listar e reabrir buscas; /configuracoes precisa editar perfil e mensagem e exibir status dos conectores sem segredos.
 - O processamento da fila depende de uma chamada do navegador; para agendamento futuro será necessário configurar `pg_cron`/`pg_net` (ou cron externo) para chamar o endpoint protegido `processar-fila` periodicamente, com segredo mantido nos Secrets.

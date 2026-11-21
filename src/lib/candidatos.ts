@@ -26,6 +26,26 @@ export interface CandidatoCnpja {
   phones?: { area?: string | null; number?: string | null }[] | null;
   mainActivity?: { id?: number | null } | null;
   sideActivities?: { id?: number | null }[] | null;
+  status?: { id?: number | null; text?: string | null } | null;
+}
+
+/** A pesquisa oficial pode vir como uma página de estabelecimentos. */
+export function extrairCandidatosCnpja(resposta: unknown): CandidatoCnpja[] | null {
+  const raiz = Array.isArray(resposta)
+    ? resposta
+    : resposta && typeof resposta === "object"
+      ? ((resposta as { records?: unknown; data?: unknown; items?: unknown }).records ??
+        (resposta as { data?: unknown }).data ??
+        (resposta as { items?: unknown }).items)
+      : null;
+  if (!Array.isArray(raiz)) return null;
+  return raiz.filter((item): item is CandidatoCnpja => {
+    if (!item || typeof item !== "object") return false;
+    const c = item as { taxId?: unknown; address?: unknown; phones?: unknown };
+    return typeof c.taxId === "string" && /^\d{14}$/.test(c.taxId) &&
+      (c.address === undefined || c.address === null || typeof c.address === "object") &&
+      (c.phones === undefined || c.phones === null || Array.isArray(c.phones));
+  });
 }
 
 export interface LeadParaComparar {
@@ -48,6 +68,7 @@ export type Decisao =
   | { tipo: "nenhum"; candidatos: Avaliacao[] };
 
 export function cnaeConfere(c: CandidatoCnpja, cnae: string | null): boolean {
+  if (c.status?.id !== undefined && c.status.id !== null && c.status.id !== 2) return false;
   if (!cnae) return true;
   const alvo = Number(soDigitos(cnae));
   const ids = [c.mainActivity?.id, ...(c.sideActivities ?? []).map((s) => s.id)].filter((x): x is number => typeof x === "number");
@@ -94,7 +115,7 @@ export function avaliar(lead: LeadParaComparar, c: CandidatoCnpja): Avaliacao {
 export function decidir(lead: LeadParaComparar, registros: CandidatoCnpja[], cnae: string | null): Decisao {
   const candidatos = registros.filter((r) => cnaeConfere(r, cnae)).map((r) => avaliar(lead, r)).sort((x, y) => y.pontos - x.pontos);
   if (candidatos.length === 0) return { tipo: "nenhum", candidatos };
-  const fortes = candidatos.filter((c) => c.bateTelefone || c.bateEndereco);
+  const fortes = candidatos.filter((c) => c.bateNome && (c.bateTelefone || c.bateEndereco));
   if (fortes.length === 1) return { tipo: "confirmado", escolhido: fortes[0] as Avaliacao, candidatos };
   if (fortes.length > 1) return { tipo: "varios", candidatos };
   if (candidatos.length === 1) return { tipo: "provavel", escolhido: candidatos[0] as Avaliacao, candidatos };
