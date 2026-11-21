@@ -34,3 +34,12 @@
 - `bun run build`: passou. `bun test`: 26 testes passaram.
 - Playwright não está instalado no projeto; por solicitação, nenhuma dependência foi adicionada e não foram geradas capturas. Verificação visual em 375/768/1440 px foi pulada conforme orientação do usuário.
 - Nenhuma alteração de banco/migration nesta fase. Busca real continua dependendo do preview do Lovable e dos Secrets configurados lá.
+
+## Correção de duplicatas e processamento (2026-11-21)
+- Causa observada: cada execução podia importar até 20 resultados enquanto a busca permanecia em `buscando`; chamadas concorrentes liam a mesma execução concluída e inseriam o mesmo conjunto outra vez.
+- Além disso, a deduplicação local só comparava placeId e endereço+telefone, deixando passar repetições sem placeId e com telefone igual em endereços escritos de modos diferentes.
+- A importação agora reserva a busca com transição atômica de status, deduplica por placeId ou nome normalizado+telefone e reaproveita resultados CNPJá já consultados para o mesmo placeId.
+- Limita a coleta ao pedido quando não há filtro; com “sem site” coleta no máximo 3× a quantidade pedida, deduplica, filtra e limita antes de criar tarefas pagas. A tela exibe coletadas/únicas/mantidas.
+- Adiciona pausa/retomada, status por lead e estimativa de tempo; tarefas de buscas pausadas ficam na fila e podem ser retomadas sem apagar registros.
+- Todas as requisições CNPJá (`/credit`, `/zip` e `/office`) usam reserva atômica global com intervalo de 6,1 s (máximo de 10 por minuto). Saldo abaixo de 10 bloqueia e avisa; respostas 429 voltam à fila com espera, no máximo três tentativas.
+- Sem mudança de esquema, migration ou RLS. `bun run build`, `bun test` (28 testes) e `bun x tsc --noEmit` passaram; busca real não foi executada localmente porque depende dos Secrets do Lovable.

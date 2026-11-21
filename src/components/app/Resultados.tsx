@@ -2,11 +2,11 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
-import { Building2, ChevronDown, Download, ExternalLink, MessageCircle, Phone, Smartphone, Trash2, UserRound, Users, CheckCheck } from "lucide-react";
+import { Building2, ChevronDown, Download, ExternalLink, MessageCircle, Phone, Smartphone, Trash2, UserRound, Users, CheckCheck, Pause, Play } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import type { Database } from "@/integrations/supabase/types";
 import { buscaQuery, perfilQuery } from "@/lib/queries";
-import { escolherCnpjCandidato, informarCnpj, processarAgora } from "@/lib/caderneta.functions";
+import { controlarBusca, escolherCnpjCandidato, informarCnpj, processarAgora } from "@/lib/caderneta.functions";
 import { aplicarModelo, cnpjValido, formatarCnpj, formatarTelefone, linkWhatsApp } from "@/lib/br";
 import type { Fonte, Motivo } from "@/lib/score";
 import { BadgeConfianca, Metric, Pill, SkeletonLinhas, StatusBusca, StatusCnpj } from "@/components/app/ui-bits";
@@ -24,18 +24,34 @@ const NOME_FONTE: Record<string, string> = { maps: "Google Maps", site: "Site", 
 export function Resultados({ buscaId }: { buscaId: string }) {
   const qc = useQueryClient();
   const processar = useServerFn(processarAgora);
+  const controlar = useServerFn(controlarBusca);
   const { data: perfil } = useQuery(perfilQuery);
   const { data, isPending, isError, refetch } = useQuery({
     ...buscaQuery(buscaId),
     refetchInterval: (q) => (q.state.data?.busca && q.state.data.busca.status !== "concluida" && q.state.data.busca.status !== "erro" ? 5000 : false),
   });
-  const ativo = !!data?.busca && data.busca.status !== "concluida" && data.busca.status !== "erro";
-  const [fila, setFila] = useState<{ cnpjNaFila: number; bloqueadoAte: string | null } | null>(null);
+  const ativo = !!data?.busca && !["concluida", "erro", "pausada"].includes(data.busca.status);
+  const [fila, setFila] = useState<{ cnpjNaFila: number; cnpjaNaFila: number; bloqueadoAte: string | null; bloqueadoCnpjaAte: string | null; cnpjaSaldoBaixo: boolean } | null>(null);
+  const [metricas, setMetricas] = useState<{ coletadas: number; unicas: number; mantidas: number } | null>(null);
+  const [controlando, setControlando] = useState(false);
+  const [agora, setAgora] = useState(Date.now());
+
+  useEffect(() => {
+    const salva = localStorage.getItem(`caderneta-mapas-${buscaId}`);
+    if (salva) { try { setMetricas(JSON.parse(salva)); } catch { localStorage.removeItem(`caderneta-mapas-${buscaId}`); } }
+    const timer = setInterval(() => setAgora(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [buscaId]);
 
   useEffect(() => {
     if (!ativo) return;
     let vivo = true;
-    const rodar = () => processar().then((r) => { if (vivo) { setFila(r); void qc.invalidateQueries({ queryKey: ["busca", buscaId] }); } }).catch(() => {});
+    const rodar = () => processar().then((r) => { if (vivo) {
+      setFila(r);
+      const info = r.importacoes?.find((x) => x.buscaId === buscaId);
+      if (info) { const m = { coletadas: info.coletadas, unicas: info.unicas, mantidas: info.mantidas }; setMetricas(m); localStorage.setItem(`caderneta-mapas-${buscaId}`, JSON.stringify(m)); }
+      void qc.invalidateQueries({ queryKey: ["busca", buscaId] });
+    } }).catch(() => {});
     rodar();
     const t = setInterval(rodar, 20000);
     return () => { vivo = false; clearInterval(t); };
@@ -67,11 +83,26 @@ export function Resultados({ buscaId }: { buscaId: string }) {
   const todos = data.leads;
   const concluidos = todos.filter((l) => l.status === "concluido").length;
   const pct = todos.length ? Math.round((concluidos / todos.length) * 100) : 0;
+  const alvo = b.quantidade ?? todos.length;
+  const emAndamento = todos.find((l) => l.cnpj_status === "consultando");
+  const posicao = emAndamento ? todos.findIndex((l) => l.id === emAndamento.id) + 1 : Math.min(concluidos + 1, Math.max(alvo, 1));
+  const restantes = Math.max(0, todos.length - concluidos);
+  const decorrido = Math.max(1000, agora - new Date(b.created_at).getTime());
+  const estimativaMs = concluidos > 0 ? Math.round(decorrido / concluidos * restantes) : b.status === "buscando" ? 120_000 : restantes * 20_000;
+  const tempoRestante = b.status === "concluida" ? "concluída" : b.status === "pausada" ? "pausada" : estimativaMs < 60_000 ? `cerca de ${Math.max(1, Math.ceil(estimativaMs / 1000))} s` : `cerca de ${Math.ceil(estimativaMs / 60_000)} min`;
   const agrupar = b.tipo === "manual";
 
   async function marcar(l: Lead, v: boolean) {
     const { error } = await supabase.from("leads").update({ contatado: v }).eq("id", l.id);
     if (error) toast.error("Não foi possível salvar."); else void qc.invalidateQueries({ queryKey: ["busca", buscaId] });
+  }
+  async function alternarPausa() {
+    setControlando(true);
+    try {
+      await controlar({ data: { buscaId, acao: b.status === "pausada" ? "retomar" : "pausar" } });
+      void qc.invalidateQueries({ queryKey: ["busca", buscaId] });
+    } catch { toast.error("Não foi possível alterar o processamento da busca."); }
+    finally { setControlando(false); }
   }
   async function excluir(l: Lead) {
     if (!confirm(`Excluir "${l.nome}"?`)) return;
@@ -106,13 +137,20 @@ export function Resultados({ buscaId }: { buscaId: string }) {
         <div className="flex flex-wrap items-center gap-3">
           <StatusBusca status={b.status} />
           <span className="text-sm">{concluidos} de {todos.length} empresas processadas</span>
-          {fila && fila.cnpjNaFila > 0 && <span className="text-sm text-muted-foreground">· {fila.cnpjNaFila} CNPJ na fila (≈3 por minuto)</span>}
+          {!['concluida', 'erro'].includes(b.status) && <Button variant="outline" className="min-h-11" loading={controlando} onClick={() => void alternarPausa()}><>{b.status === "pausada" ? <Play aria-hidden /> : <Pause aria-hidden />}{b.status === "pausada" ? "Retomar busca" : "Pausar busca"}</></Button>}
+          {fila && fila.cnpjaNaFila > 0 && <span className="text-sm text-muted-foreground">· {fila.cnpjaNaFila} buscas CNPJá na fila (limite global de 10 requisições/minuto)</span>}
           {fila?.bloqueadoAte && <Pill tone="atencao">Consulta de CNPJ em pausa até {new Date(fila.bloqueadoAte).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</Pill>}
+          {fila?.bloqueadoCnpjaAte && <Pill tone="atencao">CNPJá em pausa até {new Date(fila.bloqueadoCnpjaAte).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</Pill>}
+          {fila?.cnpjaSaldoBaixo && <Pill tone="erro">Saldo do CNPJá abaixo de 10: buscas pagas pausadas</Pill>}
         </div>
         <div className="mt-3 h-2 overflow-hidden rounded-full bg-secondary" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label="Progresso">
           <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${b.status === "concluida" ? 100 : pct}%` }} />
         </div>
-        {b.status === "buscando" && <p className="mt-2 text-sm text-muted-foreground">Buscando empresas no Google Maps. Isso leva de 1 a 3 minutos.</p>}
+        <p className="mt-2 text-sm text-muted-foreground">
+          {b.status === "buscando" ? "Buscando empresas no Google Maps." : emAndamento ? `${emAndamento.cnpj ? "Consultando dados de" : "Buscando CNPJ de"} ${emAndamento.nome}, ${posicao} de ${alvo}.` : b.status === "pausada" ? "O processamento está pausado e pode ser retomado." : b.status === "importando" ? "Deduplicando resultados e aplicando filtros." : "Aguardando a próxima empresa da fila."}
+          {metricas && <> Coletadas {metricas.coletadas}, únicas {metricas.unicas}, mantidas {metricas.mantidas}.</>}
+          {b.status !== "pausada" && b.status !== "concluida" && <> Tempo estimado restante: {tempoRestante}.</>}
+        </p>
         {b.erro && <p className="mt-2 text-sm text-danger-text" role="alert">{b.erro}</p>}
       </div>
 
@@ -171,6 +209,15 @@ function Dono({ l }: { l: Lead }) {
   return <span className="text-sm text-muted-foreground">Dono: não disponível</span>;
 }
 
+function EtapaLead({ lead }: { lead: Lead }) {
+  const texto = lead.status === "concluido" || lead.cnpj_status === "validado"
+    ? "Pronto"
+    : lead.cnpj_status === "consultando"
+      ? lead.cnpj ? "Consultando dados do CNPJ" : "Buscando CNPJ"
+      : "Na fila";
+  return <span className="text-xs font-medium text-muted-foreground">Etapa: {texto}</span>;
+}
+
 function TabelaLeads(p: ListaProps) {
   return (
     <div className="card-soft hidden overflow-hidden md:block">
@@ -189,7 +236,7 @@ function TabelaLeads(p: ListaProps) {
                   <td className="px-4 py-3"><div className="font-medium text-heading">{l.nome}</div><div className="text-sm text-muted-foreground">{[l.categoria, l.cidade].filter(Boolean).join(" · ")}</div></td>
                   <td className="px-4 py-3"><Dono l={l} /></td>
                   <td className="px-4 py-3">{tel ? <div className="space-y-1"><div className="font-medium text-heading">{formatarTelefone(tel.numero)} <span className="text-sm font-normal text-muted-foreground">{tel.tipo}</span></div><BadgeConfianca score={tel.score} /></div> : <span className="text-sm text-muted-foreground">—</span>}</td>
-                  <td className="px-4 py-3"><StatusCnpj status={l.cnpj_status} /></td>
+                  <td className="px-4 py-3"><div className="space-y-2"><StatusCnpj status={l.cnpj_status} /><EtapaLead lead={l} /></div></td>
                   <td className="px-4 py-3"><Acoes lead={l} tel={tel} abrirWa={p.abrirWa} /></td>
                   <td className="px-2 py-3 text-right">
                     <button aria-expanded={open} aria-label={open ? "Recolher detalhes" : "Ver detalhes"} onClick={() => p.setAberto(open ? null : l.id)} className="grid size-11 place-items-center rounded-full hover:bg-secondary"><ChevronDown className={`size-5 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden /></button>
@@ -222,6 +269,7 @@ function CardsLeads(p: ListaProps) {
               {tel && <span className="font-medium text-heading">{formatarTelefone(tel.numero)}</span>}
               {tel && <BadgeConfianca score={tel.score} />}
               <StatusCnpj status={l.cnpj_status} />
+              <EtapaLead lead={l} />
               {l.contatado && <Pill tone="ok" icon={<CheckCheck className="size-4 text-success" aria-hidden />}>Contatado</Pill>}
             </div>
             <div className="mt-3 [&_a]:flex-1 [&_button]:flex-1"><Acoes lead={l} tel={tel} abrirWa={p.abrirWa} /></div>

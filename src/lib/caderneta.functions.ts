@@ -52,12 +52,21 @@ export const escolherCnpjCandidato = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+export const controlarBusca = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ buscaId: z.string().uuid(), acao: z.enum(["pausar", "retomar"]) }).parse(d))
+  .handler(async ({ data, context }) => {
+    const s = await import("@/lib/caderneta.server");
+    await s.controlarBusca(context.userId, data.buscaId, data.acao);
+    return { ok: true };
+  });
+
 export const processarAgora = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .handler(async () => {
     const s = await import("@/lib/caderneta.server");
-    await s.processarFila();
-    return s.previsaoFila();
+    const processamento = await s.processarFila();
+    return { ...(await s.previsaoFila()), importacoes: processamento.importacoes };
   });
 
 export const infoSistema = createServerFn({ method: "POST" })

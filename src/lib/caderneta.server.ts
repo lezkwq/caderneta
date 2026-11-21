@@ -6,6 +6,7 @@ import { calcularScore, type Fonte } from "@/lib/score";
 import type { Database } from "@/integrations/supabase/types";
 import { decidir, ehSiteProprio, extrairCandidatosCnpja, limparNome, type CandidatoCnpja } from "@/lib/candidatos";
 import { analisarHtml, baixarPagina, urlPermitida } from "@/lib/site-fetch.server";
+import { selecionarResultadosMaps, mapsResultKey } from "@/lib/maps-results";
 
 const db = supabaseAdmin;
 type TarefaUpd = Database["public"]["Tables"]["tarefas"]["Update"];
@@ -69,6 +70,14 @@ async function adiarTarefa(id: string, seg: number, contaTentativa = true) {
     upd["tentativas"] = Math.max(0, (data?.tentativas ?? 1) - 1);
   }
   await db.from("tarefas").update(upd).eq("id", id);
+}
+
+async function adiarSeBuscaPausada(t: { id: string; lead_id: string }): Promise<boolean> {
+  const { data } = await db.from("leads").select("buscas!inner(status)").eq("id", t.lead_id).maybeSingle();
+  const busca = data?.buscas as unknown as { status?: string } | null;
+  if (busca?.status !== "pausada") return false;
+  await adiarTarefa(t.id, 3600, false);
+  return true;
 }
 
 // ───────────── Telefones ─────────────
@@ -135,7 +144,7 @@ async function atualizarEstadoLead(leadId: string) {
 
 async function atualizarEstadoBusca(buscaId: string) {
   const { data: b } = await db.from("buscas").select("status").eq("id", buscaId).maybeSingle();
-  if (!b || b.status === "buscando" || b.status === "erro") return;
+  if (!b || ["buscando", "importando", "pausada", "erro"].includes(b.status)) return;
   const { count } = await db.from("leads").select("id", { count: "exact", head: true }).eq("busca_id", buscaId).neq("status", "concluido");
   const { count: total } = await db.from("leads").select("id", { count: "exact", head: true }).eq("busca_id", buscaId);
   await db.from("buscas").update({ status: (count ?? 0) > 0 ? "processando" : "concluida", total_leads: total ?? 0 }).eq("id", buscaId);
@@ -143,6 +152,7 @@ async function atualizarEstadoBusca(buscaId: string) {
 
 // ───────────── Etapa 1: acompanhar runs do Apify ─────────────
 async function acompanharRuns() {
+  const importacoes: { buscaId: string; coletadas: number; unicas: number; mantidas: number }[] = [];
   const { data: buscas } = await db.from("buscas").select("*").eq("status", "buscando").not("apify_run_id", "is", null).order("updated_at").limit(3);
   for (const b of buscas ?? []) {
     try {
@@ -155,49 +165,71 @@ async function acompanharRuns() {
         if (b.tipo === "manual") await atualizarEstadoBusca(b.id);
         continue;
       }
-      const lim = Math.min(300, (b.quantidade ?? 20) * (b.so_sem_site ? 3 : 2));
+      const { data: importando } = await db.from("buscas").update({ status: "importando" }).eq("id", b.id).eq("status", "buscando").select("id").maybeSingle();
+      if (!importando) continue;
+      const lim = Math.min(300, (b.quantidade ?? 20) * (b.so_sem_site ? 3 : 1));
       const ri = await fetch(`${APIFY}/datasets/${encodeURIComponent(b.apify_dataset_id as string)}/items?clean=true&limit=${lim}`, { headers: apifyHeaders() });
-      const itens = ri.ok ? ((await ri.json()) as ItemMaps[]) : [];
-      if (b.tipo === "maps") await importarItensMaps(b, itens);
-      else await mesclarItensManual(b, itens);
-      await db.from("buscas").update({ status: "processando" }).eq("id", b.id);
+      if (!ri.ok) throw new Error("Falha ao baixar os resultados do Maps.");
+      const itens = (await ri.json()) as ItemMaps[];
+      const resultado = b.tipo === "maps" ? await importarItensMaps(b, itens) : (await mesclarItensManual(b, itens), null);
+      await db.from("buscas").update({ status: "processando" }).eq("id", b.id).eq("status", "importando");
       await atualizarEstadoBusca(b.id);
+      if (resultado) importacoes.push({ buscaId: b.id, ...resultado });
     } catch {
-      // segue para a próxima busca
+      await db.from("buscas").update({ status: "buscando" }).eq("id", b.id).eq("status", "importando");
     }
   }
+  return importacoes;
 }
 
 async function importarItensMaps(b: { id: string; user_id: string; quantidade: number | null; cidade: string | null; estado: string | null; so_sem_site: boolean }, itens: ItemMaps[]) {
-  const vistosPlace = new Set<string>();
-  const vistosTelEnd = new Set<string>();
-  let n = 0;
-  for (const it of itens) {
-    if (n >= (b.quantidade ?? 20)) break;
-    if (!it.title || it.permanentlyClosed) continue;
+  const quantidade = b.quantidade ?? 20;
+  const coletadosUnicos = selecionarResultadosMaps(itens, Number.MAX_SAFE_INTEGER);
+  const { data: existentes } = await db.from("leads").select("id, place_id, nome").eq("busca_id", b.id);
+  const ids = (existentes ?? []).map((l) => l.id);
+  const { data: telefonesExistentes } = ids.length ? await db.from("telefones").select("lead_id, numero").in("lead_id", ids) : { data: [] };
+  const numerosPorLead = new Map<string, string[]>();
+  for (const t of telefonesExistentes ?? []) numerosPorLead.set(t.lead_id, [...(numerosPorLead.get(t.lead_id) ?? []), t.numero]);
+  const chavesExistentes = new Set<string>();
+  const linhasExistentes = new Set<string>();
+  for (const l of existentes ?? []) {
+    const telefones = numerosPorLead.get(l.id) ?? [];
+    const identidade = l.place_id ? `place:${l.place_id}` : telefones.map((n) => mapsResultKey({ title: l.nome, phone: n })).find(Boolean) ?? `id:${l.id}`;
+    linhasExistentes.add(identidade);
+    if (l.place_id) chavesExistentes.add(`place:${l.place_id}`);
+    for (const numero of telefones) {
+      const chave = mapsResultKey({ title: l.nome, phone: numero });
+      if (chave) chavesExistentes.add(chave);
+    }
+  }
+  const existentesUnicos = linhasExistentes.size;
+  const selecionados = coletadosUnicos.itens
+    .filter((it) => !!it.title && !it.permanentlyClosed)
+    .filter((it) => !b.so_sem_site || !ehSiteProprio(it.website))
+    .filter((it) => { const chave = mapsResultKey(it); return !chave || !chavesExistentes.has(chave); })
+    .slice(0, Math.max(0, quantidade - existentesUnicos));
+  let novasMantidas = 0;
+  for (const it of selecionados) {
+    const { data: buscaAtual } = await db.from("buscas").select("status").eq("id", b.id).maybeSingle();
+    if (buscaAtual?.status !== "importando") break;
     const proprio = ehSiteProprio(it.website);
-    if (b.so_sem_site && proprio) continue;
-    if (it.placeId && vistosPlace.has(it.placeId)) continue;
-    const chave = `${soDigitos(it.phoneUnformatted ?? it.phone ?? "")}|${normalizarTexto(it.address)}`;
-    if (chave !== "|" && vistosTelEnd.has(chave)) continue;
-    if (it.placeId) vistosPlace.add(it.placeId);
-    vistosTelEnd.add(chave);
-    n++;
     const site = proprio && it.website && urlPermitida(it.website) ? it.website : null;
     const social = !proprio && it.website ? { tipo: classificarLink(it.website), url: it.website } : null;
     const links = [it.url ? { tipo: "maps", url: it.url } : null, site ? { tipo: "site", url: site } : null, social].filter(Boolean);
     const { data: lead } = await db.from("leads").insert({
-      user_id: b.user_id, busca_id: b.id, nome: it.title.slice(0, 200), categoria: it.categoryName ?? null,
+      user_id: b.user_id, busca_id: b.id, nome: it.title!.slice(0, 200), categoria: it.categoryName ?? null,
       endereco: it.address ?? null, logradouro: it.street ?? null, cidade: it.city ?? b.cidade, uf: it.state ? ufDeNome(it.state) : b.estado,
       cep: it.postalCode ?? null, place_id: it.placeId ?? null, maps_url: it.url ?? null, site, site_proprio: !!site, links: links as unknown as Json, status: "processando",
     }).select("id").single();
     if (!lead) continue;
+    novasMantidas++;
     if (it.phoneUnformatted || it.phone) await adicionarTelefone(b.user_id, lead.id, it.phoneUnformatted ?? it.phone ?? "", { tipo: "maps", url: it.url ?? null });
     if (site) await enfileirar(b.user_id, lead.id, "site");
     else await enfileirar(b.user_id, lead.id, "cnpja");
     await recalcularScore(lead.id, false);
     await atualizarEstadoLead(lead.id);
   }
+  return { coletadas: itens.length, unicas: coletadosUnicos.unicas, mantidas: Math.min(quantidade, existentesUnicos + novasMantidas) };
 }
 
 async function mesclarItensManual(b: { id: string; user_id: string }, itens: ItemMaps[]) {
@@ -232,6 +264,7 @@ export function ufDeNome(s: string): string {
 
 // ───────────── Etapa 2: site ─────────────
 async function processarSite(tarefa: { id: string; lead_id: string; user_id: string }) {
+  if (await adiarSeBuscaPausada(tarefa)) return;
   const { data: lead } = await db.from("leads").select("id, site, cnpj").eq("id", tarefa.lead_id).maybeSingle();
   if (!lead?.site) { await concluirTarefa(tarefa.id); return; }
   const base = urlPermitida(lead.site);
@@ -243,6 +276,7 @@ async function processarSite(tarefa: { id: string; lead_id: string; user_id: str
   }
   const cnpjs: { cnpj: string; url: string }[] = [];
   for (const p of paginas.slice(0, 3)) {
+    if (await adiarSeBuscaPausada(tarefa)) return;
     const pg = await baixarPagina(p);
     if (!pg) continue;
     const a = analisarHtml(pg.html, pg.url, extrairCnpjs);
@@ -275,6 +309,7 @@ async function processarSite(tarefa: { id: string; lead_id: string; user_id: str
 
 // ───────────── Etapa 2b: busca opcional "nome + cidade + CNPJ" ─────────────
 async function processarBuscaCnpj(tarefa: { id: string; lead_id: string; user_id: string }) {
+  if (await adiarSeBuscaPausada(tarefa)) return;
   const cfg = await lerConfig();
   const { data: lead } = await db.from("leads").select("id, nome, cidade, cnpj").eq("id", tarefa.lead_id).maybeSingle();
   if (!lead || lead.cnpj || !cfg.buscaCnpjGoogle) { await concluirTarefa(tarefa.id); if (lead) await atualizarEstadoLead(lead.id); return; }
@@ -368,6 +403,7 @@ export function conferirEndereco(lead: { cidade: string | null; uf: string | nul
 }
 
 async function processarCnpj(tarefa: { id: string; lead_id: string; user_id: string; tentativas: number }) {
+  if (await adiarSeBuscaPausada(tarefa)) return "pausado";
   const cfg = await lerConfig();
   const { data: lead } = await db.from("leads").select("*").eq("id", tarefa.lead_id).maybeSingle();
   if (!lead?.cnpj || !cnpjValido(lead.cnpj)) { await concluirTarefa(tarefa.id); if (lead) await atualizarEstadoLead(lead.id); return "ok"; }
@@ -426,14 +462,14 @@ async function processarCnpj(tarefa: { id: string; lead_id: string; user_id: str
 // ───────────── Worker: chamado pelo agendamento e pela tela ─────────────
 export async function processarFila() {
   const inicio = Date.now();
-  const resumo = { runs: 0, sites: 0, buscasCnpj: 0, cnpj: "" as string };
-  await acompanharRuns(); resumo.runs = 1;
+  const resumo = { runs: 0, sites: 0, buscasCnpj: 0, cnpj: "" as string, importacoes: [] as { buscaId: string; coletadas: number; unicas: number; mantidas: number }[] };
+  resumo.importacoes = await acompanharRuns(); resumo.runs = 1;
   const { data: sites } = await db.rpc("reservar_tarefas", { _tipo: "site", _limite: 2 });
   for (const t of sites ?? []) { if (Date.now() - inicio > 60000) { await adiarTarefa(t.id, 5, false); continue; } await processarSite(t).catch(() => concluirTarefa(t.id)); resumo.sites++; }
   const { data: bcs } = await db.rpc("reservar_tarefas", { _tipo: "busca_cnpj", _limite: 1 });
   for (const t of bcs ?? []) { await processarBuscaCnpj(t).catch(() => concluirTarefa(t.id)); resumo.buscasCnpj++; }
   const { data: cja } = await db.rpc("reservar_tarefas", { _tipo: "cnpja", _limite: 1 });
-  for (const t of cja ?? []) await processarCnpja(t).catch(() => adiarTarefa(t.id, 120));
+  for (const t of cja ?? []) await processarCnpja({ ...t, tentativas: t.tentativas }).catch(() => adiarTarefa(t.id, 120));
   const { data: cn } = await db.rpc("reservar_tarefas", { _tipo: "cnpj", _limite: 1 });
   for (const t of cn ?? []) resumo.cnpj = await processarCnpj(t).catch(() => { void adiarTarefa(t.id, 60); return "falha"; });
   return resumo;
@@ -530,63 +566,133 @@ export async function selecionarCnpjCandidato(userId: string, leadId: string, cn
   await atualizarEstadoLead(leadId);
 }
 
+export async function controlarBusca(userId: string, buscaId: string, acao: "pausar" | "retomar") {
+  const { data: busca } = await db.from("buscas").select("id, status, tipo, apify_run_id").eq("id", buscaId).eq("user_id", userId).maybeSingle();
+  if (!busca) throw new Error("Busca não encontrada.");
+  if (acao === "pausar") {
+    if (["concluida", "erro", "pausada"].includes(busca.status)) return;
+    await db.from("buscas").update({ status: "pausada" }).eq("id", buscaId).eq("user_id", userId);
+    return;
+  }
+  if (busca.status !== "pausada") return;
+  const status = busca.tipo === "maps" && busca.apify_run_id ? "buscando" : "processando";
+  await db.from("buscas").update({ status }).eq("id", buscaId).eq("user_id", userId).eq("status", "pausada");
+  const { data: leads } = await db.from("leads").select("id").eq("busca_id", buscaId);
+  const ids = (leads ?? []).map((l) => l.id);
+  if (ids.length) await db.from("tarefas").update({ executar_apos: new Date().toISOString() }).in("lead_id", ids).eq("status", "pendente");
+}
+
 export async function previsaoFila() {
   const cfg = await lerConfig();
   const { count } = await db.from("tarefas").select("id", { count: "exact", head: true }).eq("tipo", "cnpj").in("status", ["pendente", "em_processamento"]);
-  const { data: est } = await db.from("api_estado").select("bloqueado_ate").eq("chave", "cnpj").maybeSingle();
+  const { count: countCnpja } = await db.from("tarefas").select("id", { count: "exact", head: true }).eq("tipo", "cnpja").in("status", ["pendente", "em_processamento"]);
+  const [{ data: est }, { data: estCnpja }, { data: credito }] = await Promise.all([
+    db.from("api_estado").select("bloqueado_ate").eq("chave", "cnpj").maybeSingle(),
+    db.from("api_estado").select("bloqueado_ate").eq("chave", "cnpja").maybeSingle(),
+    db.from("cnpja_cache").select("resposta, criado_em").eq("chave", "credit:temporario").maybeSingle(),
+  ]);
   const bloqueio = est?.bloqueado_ate && new Date(est.bloqueado_ate) > new Date() ? est.bloqueado_ate : null;
-  return { cnpjNaFila: count ?? 0, intervaloSeg: cfg.cnpjIntervalo, bloqueadoAte: bloqueio, buscasPorDia: cfg.buscasPorDia };
+  const bloqueioCnpja = estCnpja?.bloqueado_ate && new Date(estCnpja.bloqueado_ate) > new Date() ? estCnpja.bloqueado_ate : null;
+  const saldoCnpjaAtual = (credito?.resposta as { saldo?: unknown } | null)?.saldo;
+  const creditoValido = !!credito?.criado_em && Date.now() - new Date(credito.criado_em).getTime() < 30_000;
+  return { cnpjNaFila: count ?? 0, cnpjaNaFila: countCnpja ?? 0, intervaloSeg: cfg.cnpjIntervalo, bloqueadoAte: bloqueio, bloqueadoCnpjaAte: bloqueioCnpja, cnpjaSaldoBaixo: typeof saldoCnpjaAtual === "number" && saldoCnpjaAtual < cfg.cnpjaSaldoMinimo && (creditoValido || !!bloqueioCnpja), buscasPorDia: cfg.buscasPorDia };
 }
 
 
 // ───────────── Busca de CNPJ por nome (CNPJá) ─────────────
 const CNPJA = "https://api.cnpja.com";
+const INTERVALO_CNPJA_MS = 6100;
 function cnpjaHeaders() {
   const k = process.env["CNPJA_API_KEY"];
   if (!k) throw new Error("CNPJA_API_KEY não configurado");
   return { Authorization: k, accept: "application/json" };
 }
 
-export async function saldoCnpja(): Promise<number | null> {
+async function requisitarCnpja(url: string): Promise<{ response: Response } | { esperarSeg: number; tipo: "janela" | "limite" }> {
+  const { data: estado } = await db.from("api_estado").select("ultima_consulta, bloqueado_ate").eq("chave", "cnpja").maybeSingle();
+  const bloqueio = estado?.bloqueado_ate ? new Date(estado.bloqueado_ate).getTime() : 0;
+  if (bloqueio > Date.now()) return { esperarSeg: Math.ceil((bloqueio - Date.now()) / 1000), tipo: "limite" };
+  const agora = new Date();
+  const antes = new Date(agora.getTime() - INTERVALO_CNPJA_MS).toISOString();
+  const { data: reservado } = await db.from("api_estado").update({ ultima_consulta: agora.toISOString() })
+    .eq("chave", "cnpja").or(`ultima_consulta.is.null,ultima_consulta.lt.${antes}`).select("chave").maybeSingle();
+  if (!reservado) {
+    const anterior = estado?.ultima_consulta ? new Date(estado.ultima_consulta).getTime() : Date.now();
+    return { esperarSeg: Math.max(1, Math.ceil((anterior + INTERVALO_CNPJA_MS - Date.now()) / 1000)), tipo: "janela" };
+  }
+  const response = await fetch(url, { headers: cnpjaHeaders() });
+  if (response.status === 429) {
+    const valor = response.headers.get("retry-after") ?? "";
+    const segundos = Number(valor);
+    const dataRetry = Date.parse(valor);
+    const esperarSeg = Math.min(3600, Math.max(60, Number.isFinite(segundos) && segundos > 0 ? segundos : Number.isFinite(dataRetry) ? Math.ceil((dataRetry - Date.now()) / 1000) : 60));
+    await db.from("api_estado").update({ bloqueado_ate: new Date(Date.now() + esperarSeg * 1000).toISOString() }).eq("chave", "cnpja");
+    return { esperarSeg, tipo: "limite" };
+  }
+  return { response };
+}
+
+export async function saldoCnpja(): Promise<{ saldo: number | null; esperarSeg?: number }> {
   try {
-    const r = await fetch(`${CNPJA}/credit`, { headers: cnpjaHeaders() });
-    if (!r.ok) return null;
+    const { data: cache } = await db.from("cnpja_cache").select("resposta, criado_em").eq("chave", "credit:temporario").maybeSingle();
+    if (cache && Date.now() - new Date(cache.criado_em).getTime() < 30_000) {
+      const saldo = (cache.resposta as { saldo?: unknown }).saldo;
+      if (typeof saldo === "number") return { saldo };
+    }
+    const req = await requisitarCnpja(`${CNPJA}/credit`);
+    if ("esperarSeg" in req) return { saldo: null, esperarSeg: req.esperarSeg };
+    const r = req.response;
+    if (!r.ok) return { saldo: null };
     const j = await r.json();
-    if (typeof j === "number" && Number.isFinite(j) && j >= 0) return j;
-    if (!j || typeof j !== "object" || Array.isArray(j)) return null;
+    if (typeof j === "number" && Number.isFinite(j) && j >= 0) {
+      await db.from("cnpja_cache").upsert({ chave: "credit:temporario", resposta: { saldo: j } as unknown as Json, criado_em: new Date().toISOString() });
+      return { saldo: j };
+    }
+    if (!j || typeof j !== "object" || Array.isArray(j)) return { saldo: null };
     const saldo = j as Record<string, unknown>;
     for (const k of ["remaining", "available", "credits", "credit", "balance", "saldo", "totalRemaining"]) {
       const v = saldo[k];
-      if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
+      if (typeof v === "number" && Number.isFinite(v) && v >= 0) {
+        await db.from("cnpja_cache").upsert({ chave: "credit:temporario", resposta: { saldo: v } as unknown as Json, criado_em: new Date().toISOString() });
+        return { saldo: v };
+      }
     }
-    const temporarios = saldo.transient;
-    const permanentes = saldo.perpetual;
+    const temporarios = saldo["transient"];
+    const permanentes = saldo["perpetual"];
     if ((typeof temporarios === "number" || typeof permanentes === "number") &&
       (temporarios === undefined || typeof temporarios === "number") &&
       (permanentes === undefined || typeof permanentes === "number")) {
-      return (typeof temporarios === "number" ? temporarios : 0) + (typeof permanentes === "number" ? permanentes : 0);
+      const v = (typeof temporarios === "number" ? temporarios : 0) + (typeof permanentes === "number" ? permanentes : 0);
+      await db.from("cnpja_cache").upsert({ chave: "credit:temporario", resposta: { saldo: v } as unknown as Json, criado_em: new Date().toISOString() });
+      return { saldo: v };
     }
-    return null;
-  } catch { return null; }
+    return { saldo: null };
+  } catch { return { saldo: null }; }
 }
 
-async function cacheCnpja<T>(chave: string, buscar: () => Promise<T | null>): Promise<T | null> {
-  const { data } = await db.from("cnpja_cache").select("resposta").eq("chave", chave).maybeSingle();
-  if (data) return data.resposta as unknown as T;
-  const v = await buscar();
-  if (v !== null) await db.from("cnpja_cache").upsert({ chave, resposta: v as unknown as Json });
-  return v;
+async function descontarSaldoCnpja(registros: number) {
+  if (registros <= 0) return;
+  const { data } = await db.from("cnpja_cache").select("resposta").eq("chave", "credit:temporario").maybeSingle();
+  const saldo = (data?.resposta as { saldo?: unknown } | null)?.saldo;
+  if (typeof saldo !== "number") return;
+  const restante = Math.max(0, saldo - Math.ceil(registros / 10));
+  await db.from("cnpja_cache").upsert({ chave: "credit:temporario", resposta: { saldo: restante } as unknown as Json, criado_em: new Date().toISOString() });
 }
 
-async function municipioPorCep(cep: string): Promise<{ municipality: number; state: string } | null> {
+async function municipioPorCep(cep: string): Promise<{ municipality: number; state: string; esperarSeg?: number } | null> {
   const c = soDigitos(cep);
   if (c.length !== 8) return null;
-  return cacheCnpja(`zip:${c}`, async () => {
-    const r = await fetch(`${CNPJA}/zip/${c}`, { headers: cnpjaHeaders() });
-    if (!r.ok) return null;
-    const j = (await r.json()) as { municipality?: number; state?: string };
-    return j.municipality ? { municipality: j.municipality, state: j.state ?? "" } : null;
-  });
+  const cache = await db.from("cnpja_cache").select("resposta").eq("chave", `zip:${c}`).maybeSingle();
+  if (cache.data) return cache.data.resposta as unknown as { municipality: number; state: string };
+  const req = await requisitarCnpja(`${CNPJA}/zip/${c}`);
+  if ("esperarSeg" in req) return { municipality: 0, state: "", esperarSeg: req.esperarSeg };
+  const r = req.response;
+  if (!r.ok) return null;
+  const j = (await r.json()) as { municipality?: number; state?: string };
+  if (!j.municipality) return null;
+  const resultado = { municipality: j.municipality, state: j.state ?? "" };
+  await db.from("cnpja_cache").upsert({ chave: `zip:${c}`, resposta: resultado as unknown as Json });
+  return resultado;
 }
 
 async function cnaeDoNicho(nicho: string | null): Promise<string | null> {
@@ -596,15 +702,36 @@ async function cnaeDoNicho(nicho: string | null): Promise<string | null> {
   return (data ?? []).find((r) => n === normalizarTexto(r.nicho) || n.includes(normalizarTexto(r.nicho)))?.cnae ?? null;
 }
 
-async function processarCnpja(tarefa: { id: string; lead_id: string; user_id: string }) {
+async function processarCnpja(tarefa: { id: string; lead_id: string; user_id: string; tentativas: number }) {
   const cfg = await lerConfig();
-  const { data: lead } = await db.from("leads").select("*, buscas!inner(nicho)").eq("id", tarefa.lead_id).maybeSingle();
+  const { data: lead } = await db.from("leads").select("*, buscas!inner(nicho, status)").eq("id", tarefa.lead_id).maybeSingle();
   const fim = async (upd?: LeadUpd) => {
     if (upd && lead) await db.from("leads").update(upd).eq("id", lead.id);
+    if (upd && lead?.place_id) {
+      const copia = { ...upd, cnpja_buscado: true };
+      const { data: duplicados } = await db.from("leads").update(copia).eq("place_id", lead.place_id).eq("cnpja_buscado", true).eq("cnpj_status", "consultando").is("cnpj", null).neq("id", lead.id).select("id, user_id");
+      if (upd.cnpj) for (const d of duplicados ?? []) await enfileirar(d.user_id, d.id, "cnpj");
+    }
     await concluirTarefa(tarefa.id);
     if (lead) { await recalcularScore(lead.id); await atualizarEstadoLead(lead.id); }
   };
-  if (!lead || lead.cnpj || lead.cnpja_buscado) return fim();
+  if (lead && (lead.buscas as unknown as { status: string }).status === "pausada") { await adiarTarefa(tarefa.id, 3600, false); return; }
+  if (!lead || lead.cnpj) return fim();
+  if (lead.place_id) {
+    const { data: anterior } = await db.from("leads").select("cnpj, cnpj_origem, cnpj_fonte_url, cnpj_candidatos, cnpj_status, cnpj_motivo, razao_social, nome_fantasia, situacao, natureza, municipio_receita, uf_receita, email_receita, dono, dono_fonte, socios")
+      .eq("place_id", lead.place_id).eq("cnpja_buscado", true).neq("id", lead.id).limit(1).maybeSingle();
+    if (anterior) {
+      if (anterior.cnpj_status === "consultando" && !anterior.cnpj) { await adiarTarefa(tarefa.id, 60, false); return; }
+      const { cnpj, ...resto } = anterior;
+      await fim({ ...resto, cnpj, cnpja_buscado: true } as LeadUpd);
+      if (cnpj) await enfileirar(tarefa.user_id, lead.id, "cnpj");
+      return;
+    }
+  }
+  if (lead.cnpja_buscado) {
+    if (lead.cnpj_status === "consultando") { await adiarTarefa(tarefa.id, 60, false); return; }
+    return fim();
+  }
 
   const { data: estado } = await db.from("api_estado").select("bloqueado_ate").eq("chave", "cnpja").maybeSingle();
   if (estado?.bloqueado_ate && new Date(estado.bloqueado_ate) > new Date()) {
@@ -615,8 +742,31 @@ async function processarCnpja(tarefa: { id: string; lead_id: string; user_id: st
   const termos = limparNome(lead.nome, lead.cidade);
   if (!termos) return fim({ cnpja_buscado: true, cnpj_status: "nao_encontrado", cnpj_motivo: "Nome muito genérico para buscar o CNPJ." });
 
+  const saldoInfo = await saldoCnpja();
+  if (saldoInfo.esperarSeg) {
+    await db.from("leads").update({ cnpj_status: "na_fila", cnpj_motivo: "Consulta do CNPJá aguardando a janela global de 10 por minuto." }).eq("id", lead.id);
+    await adiarTarefa(tarefa.id, saldoInfo.esperarSeg, false);
+    return;
+  }
+  if (saldoInfo.saldo === null) {
+    await db.from("leads").update({ cnpj_status: "na_fila", cnpj_motivo: "Não foi possível consultar o saldo do CNPJá. Nova tentativa em alguns minutos." }).eq("id", lead.id);
+    await adiarTarefa(tarefa.id, 300, false);
+    return;
+  }
+  if (saldoInfo.saldo < cfg.cnpjaSaldoMinimo) {
+    await db.from("api_estado").update({ bloqueado_ate: new Date(Date.now() + 3600_000).toISOString() }).eq("chave", "cnpja");
+    await db.from("leads").update({ cnpj_status: "na_fila", cnpj_motivo: `Busca pausada: o saldo do CNPJá está abaixo de ${cfg.cnpjaSaldoMinimo} créditos.` }).eq("id", lead.id);
+    await adiarTarefa(tarefa.id, 3600, false);
+    return;
+  }
+
   // Cache permanente por consulta: nunca repete a mesma busca.
   const geo = lead.cep ? await municipioPorCep(lead.cep) : null;
+  if (geo?.esperarSeg) {
+    await db.from("leads").update({ cnpj_status: "na_fila", cnpj_motivo: "Consulta de CEP aguardando a janela global de 10 por minuto do CNPJá." }).eq("id", lead.id);
+    await adiarTarefa(tarefa.id, geo.esperarSeg, false);
+    return;
+  }
   const uf = geo?.state || (lead.uf && /^[A-Z]{2}$/.test(lead.uf) ? lead.uf : null);
   const nicho = (lead.buscas as unknown as { nicho: string | null } | null)?.nicho ?? null;
   const cnae = await cnaeDoNicho(nicho);
@@ -630,32 +780,36 @@ async function processarCnpja(tarefa: { id: string; lead_id: string; user_id: st
   let registros: CandidatoCnpja[];
   if (emCache) registros = (emCache.resposta as unknown as { records: CandidatoCnpja[] }).records ?? [];
   else {
-    const saldo = await saldoCnpja();
-    if (saldo === null) {
-      await db.from("leads").update({ cnpj_status: "na_fila", cnpj_motivo: "Não foi possível consultar o saldo do CNPJá. Nova tentativa em alguns minutos." }).eq("id", lead.id);
-      await adiarTarefa(tarefa.id, 300, false);
-      return;
-    }
-    if (saldo < cfg.cnpjaSaldoMinimo) {
-      await db.from("api_estado").update({ bloqueado_ate: new Date(Date.now() + 3600_000).toISOString() }).eq("chave", "cnpja");
-      await db.from("leads").update({ cnpj_status: "na_fila", cnpj_motivo: `Busca pausada: o saldo do CNPJá está abaixo de ${cfg.cnpjaSaldoMinimo} créditos.` }).eq("id", lead.id);
-      await adiarTarefa(tarefa.id, 3600, false);
-      return;
-    }
     // Reserva uma única tentativa paga por lead antes da chamada para evitar duplicidade concorrente.
-    const { data: reservado } = await db.from("leads").update({ cnpja_buscado: true, cnpj_status: "consultando" })
-      .eq("id", lead.id).eq("cnpja_buscado", false).select("id").maybeSingle();
-    if (!reservado) { await concluirTarefa(tarefa.id); await atualizarEstadoLead(lead.id); return; }
-    let r: Response;
-    try { r = await fetch(`${CNPJA}/office?${q}`, { headers: cnpjaHeaders() }); }
+    const { data: reservados } = await db.from("leads").update({ cnpja_buscado: true, cnpj_status: "consultando" })
+      .eq(lead.place_id ? "place_id" : "id", lead.place_id ?? lead.id).eq("cnpja_buscado", false).is("cnpj", null).select("id");
+    if (!reservados?.some((r) => r.id === lead.id)) {
+      await adiarTarefa(tarefa.id, 60, false);
+      return;
+    }
+    let req: Awaited<ReturnType<typeof requisitarCnpja>>;
+    try { req = await requisitarCnpja(`${CNPJA}/office?${q}`); }
     catch {
       await fim({ cnpja_buscado: true, cnpj_status: "erro", cnpj_motivo: "Não foi possível concluir a busca de nome no CNPJá. O lead segue com os telefones já encontrados." });
       return;
     }
-    if (r.status === 429) {
-      await fim({ cnpja_buscado: true, cnpj_status: "erro", cnpj_motivo: "O CNPJá limitou esta consulta. Não repetimos a busca para evitar cobrança duplicada." });
+    if ("esperarSeg" in req) {
+      if (req.tipo === "janela") {
+        const atualizacao = { cnpja_buscado: false, cnpj_status: "na_fila", cnpj_motivo: "Consulta aguardando a janela global de 10 por minuto do CNPJá." };
+        if (lead.place_id) await db.from("leads").update(atualizacao).eq("place_id", lead.place_id).eq("cnpj_status", "consultando").is("cnpj", null);
+        else await db.from("leads").update(atualizacao).eq("id", lead.id);
+        await adiarTarefa(tarefa.id, req.esperarSeg, false);
+      } else if (tarefa.tentativas >= 3) {
+        await fim({ cnpja_buscado: true, cnpj_status: "erro", cnpj_motivo: "O CNPJá repetiu o limite três vezes; pausamos novas tentativas para evitar cobrança duplicada." });
+      } else {
+        const atualizacao = { cnpja_buscado: false, cnpj_status: "na_fila", cnpj_motivo: `CNPJá no limite temporário. Nova tentativa em ${req.esperarSeg} segundos.` };
+        if (lead.place_id) await db.from("leads").update(atualizacao).eq("place_id", lead.place_id).eq("cnpj_status", "consultando").is("cnpj", null);
+        else await db.from("leads").update(atualizacao).eq("id", lead.id);
+        await adiarTarefa(tarefa.id, req.esperarSeg, true);
+      }
       return;
     }
+    const r = req.response;
     if (!r.ok) return fim({ cnpja_buscado: true, cnpj_status: "erro", cnpj_motivo: `A busca por nome no CNPJá falhou (HTTP ${r.status}).` });
     let resposta: unknown;
     try { resposta = await r.json(); }
@@ -666,6 +820,7 @@ async function processarCnpja(tarefa: { id: string; lead_id: string; user_id: st
     const encontrados = extrairCandidatosCnpja(resposta);
     if (!encontrados) return fim({ cnpja_buscado: true, cnpj_status: "erro", cnpj_motivo: "O CNPJá retornou um formato de resposta inesperado." });
     registros = encontrados;
+    await descontarSaldoCnpja(registros.length);
     await db.from("cnpja_cache").upsert({ chave, resposta: { records: registros } as unknown as Json });
   }
 
