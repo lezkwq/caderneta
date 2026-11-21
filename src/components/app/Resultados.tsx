@@ -6,7 +6,7 @@ import { Building2, ChevronDown, Download, ExternalLink, MessageCircle, Phone, S
 import { supabase } from "@/integrations/supabase/client";
 import type { Database } from "@/integrations/supabase/types";
 import { buscaQuery, perfilQuery } from "@/lib/queries";
-import { informarCnpj, processarAgora } from "@/lib/caderneta.functions";
+import { escolherCnpjCandidato, informarCnpj, processarAgora } from "@/lib/caderneta.functions";
 import { aplicarModelo, cnpjValido, formatarCnpj, formatarTelefone, linkWhatsApp } from "@/lib/br";
 import type { Fonte, Motivo } from "@/lib/score";
 import { BadgeConfianca, Metric, Pill, SkeletonLinhas, StatusBusca, StatusCnpj } from "@/components/app/ui-bits";
@@ -234,8 +234,24 @@ function CardsLeads(p: ListaProps) {
 }
 
 function Detalhes({ lead: l, tels, marcar, excluir, abrirWa, buscaId }: ListaProps & { lead: Lead; tels: Tel[] }) {
+  const qc = useQueryClient();
+  const escolher = useServerFn(escolherCnpjCandidato);
+  const [selecionando, setSelecionando] = useState<string | null>(null);
   const links = (l.links as { tipo: string; url: string }[]) ?? [];
   const socios = (l.socios as { nome: string; qualificacao: string }[]) ?? [];
+  const candidatos = (l.cnpj_candidatos as unknown as { cnpj: string; nome: string; endereco: string; telefones: string[]; pontos: number; motivos: string[] }[]) ?? [];
+  const telefonesFonteMaps = tels.filter((t) => ((t.fontes as unknown as Fonte[]) ?? []).some((f) => ["maps", "site", "whatsapp_site"].includes(f.tipo)));
+
+  async function confirmarCandidato(cnpj: string) {
+    setSelecionando(cnpj);
+    try {
+      await escolher({ data: { leadId: l.id, cnpj } });
+      toast.success("CNPJ escolhido. Vamos validar os dados do cadastro.");
+      void qc.invalidateQueries({ queryKey: ["busca", buscaId] });
+    } catch { toast.error("Não foi possível selecionar este candidato."); }
+    finally { setSelecionando(null); }
+  }
+
   return (
     <div className="grid gap-6 lg:grid-cols-2">
       <div className="space-y-3">
@@ -260,9 +276,30 @@ function Detalhes({ lead: l, tels, marcar, excluir, abrirWa, buscaId }: ListaPro
       </div>
       <div className="space-y-4">
         <div>
-          <h4 className="text-sm font-semibold text-heading">CNPJ</h4>
+          <div className="flex flex-wrap items-center gap-2"><h4 className="text-sm font-semibold text-heading">CNPJ</h4><StatusCnpj status={l.cnpj_status} /></div>
           {l.cnpj && <p className="mt-1">{formatarCnpj(l.cnpj)} {l.cnpj_fonte_url && <a href={l.cnpj_fonte_url} target="_blank" rel="noopener noreferrer" className="text-link text-sm">(fonte)</a>}</p>}
           {l.cnpj_motivo && <p className="mt-1 text-sm text-warning-text">{l.cnpj_motivo}</p>}
+          {["provavel", "varios"].includes(l.cnpj_status) && candidatos.length > 0 && (
+            <div className="mt-4 space-y-3">
+              <h5 className="text-sm font-semibold text-heading">Compare com os dados do Maps e do site</h5>
+              {candidatos.map((c) => (
+                <article key={c.cnpj} className="rounded-2xl border border-border bg-card p-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <h6 className="font-semibold text-heading">{c.nome || "Nome não informado"}</h6>
+                      <p className="mt-1 text-sm text-muted-foreground">CNPJ {formatarCnpj(c.cnpj)} · {c.pontos} pontos</p>
+                    </div>
+                    <Button className="min-h-11 w-full sm:w-auto" loading={selecionando === c.cnpj} disabled={!!selecionando} onClick={() => void confirmarCandidato(c.cnpj)}>É este</Button>
+                  </div>
+                  <div className="mt-3 grid gap-3 text-sm md:grid-cols-2">
+                    <div className="rounded-xl bg-field p-3"><strong className="text-heading">Maps / site</strong><p className="mt-1">{l.endereco || l.logradouro || "Endereço não encontrado"}{l.cep ? ` · CEP ${l.cep}` : ""}</p><p>{telefonesFonteMaps.length ? telefonesFonteMaps.map((t) => formatarTelefone(t.numero)).join(", ") : "Telefone não encontrado"}</p></div>
+                    <div className="rounded-xl bg-field p-3"><strong className="text-heading">Cadastro do candidato</strong><p className="mt-1">{c.endereco || "Endereço não informado"}</p><p>{c.telefones?.length ? c.telefones.map(formatarTelefone).join(", ") : "Telefone não informado"}</p></div>
+                  </div>
+                  {c.motivos?.length > 0 && <p className="mt-2 text-xs text-muted-foreground">Sinais: {c.motivos.join(" · ")}</p>}
+                </article>
+              ))}
+            </div>
+          )}
           {l.cnpj_status === "validado" && (
             <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
               <dt className="text-muted-foreground">Razão social</dt><dd>{l.razao_social}</dd>

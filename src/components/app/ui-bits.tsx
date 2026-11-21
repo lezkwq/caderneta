@@ -25,6 +25,8 @@ const STATUS_CNPJ: Record<string, { t: string; tone: "ok" | "erro" | "atencao" |
   na_fila: { t: "CNPJ na fila", tone: "neutro", i: "wait" },
   consultando: { t: "Consultando CNPJ", tone: "neutro", i: "spin" },
   validado: { t: "CNPJ confirmado", tone: "ok", i: "ok" },
+  provavel: { t: "Provável, confirmar", tone: "atencao", i: "warn" },
+  varios: { t: "Vários candidatos, escolher", tone: "atencao", i: "warn" },
   divergente: { t: "CNPJ divergente", tone: "atencao", i: "warn" },
   nao_encontrado: { t: "CNPJ não encontrado", tone: "neutro", i: "x" },
   erro: { t: "Falha na consulta", tone: "erro", i: "warn" },

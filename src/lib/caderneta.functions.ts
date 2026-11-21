@@ -43,6 +43,15 @@ export const informarCnpj = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+export const escolherCnpjCandidato = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ leadId: z.string().uuid(), cnpj: z.string().refine(cnpjValido, "CNPJ inválido") }).parse(d))
+  .handler(async ({ data, context }) => {
+    const s = await import("@/lib/caderneta.server");
+    await s.selecionarCnpjCandidato(context.userId, data.leadId, soDigitos(data.cnpj));
+    return { ok: true };
+  });
+
 export const processarAgora = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .handler(async () => {

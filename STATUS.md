@@ -23,6 +23,14 @@
 - O processamento da fila depende de uma chamada do navegador; para agendamento futuro será necessário configurar `pg_cron`/`pg_net` (ou cron externo) para chamar o endpoint protegido `processar-fila` periodicamente, com segredo mantido nos Secrets.
 
 ## Próximas fases
-- Estabilizar e fechar segurança/contratos da CNPJá; implementar estados de candidatos, melhorias de lista/nova busca e telas pendentes.
+- Implementar melhorias da lista/nova busca e concluir as telas pendentes.
 - Não aplicar alterações de banco automaticamente. Se uma alteração de esquema for indispensável, criar migration e registrar aqui exatamente o que precisa ser aplicado.
-- Conferir visualmente o app em 375, 768 e 1440 px nas fases D, E e F. A busca real depende dos Secrets e do preview no Lovable.
+- Nas fases E e F, conferir visualmente o app em 375, 768 e 1440 px. A busca real depende dos Secrets e do preview no Lovable.
+
+## Fase D — estados e escolha de CNPJ (2026-11-21)
+- Lista e detalhes exibem os estados de CNPJ; candidatos prováveis e múltiplos mostram comparação do endereço e telefone do Maps/site com os dados cadastrais e ação “É este”.
+- A escolha valida no servidor que o lead pertence ao usuário e que o CNPJ consta entre os candidatos salvos; depois segue a fila normal de validação e identificação de sócios/dono.
+- Campo para informar CNPJ manualmente disponível quando ainda não há CNPJ validado ou em processamento.
+- `bun run build`: passou. `bun test`: 26 testes passaram.
+- Playwright não está instalado no projeto; por solicitação, nenhuma dependência foi adicionada e não foram geradas capturas. Verificação visual em 375/768/1440 px foi pulada conforme orientação do usuário.
+- Nenhuma alteração de banco/migration nesta fase. Busca real continua dependendo do preview do Lovable e dos Secrets configurados lá.

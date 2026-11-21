@@ -516,6 +516,20 @@ export async function definirCnpjManual(userId: string, leadId: string, cnpj: st
   await atualizarEstadoLead(leadId);
 }
 
+export async function selecionarCnpjCandidato(userId: string, leadId: string, cnpj: string) {
+  const { data: lead } = await db.from("leads").select("id, user_id, cnpj_candidatos").eq("id", leadId).maybeSingle();
+  if (!lead || lead.user_id !== userId) throw new Error("Lead não encontrado.");
+  const candidatos = (lead.cnpj_candidatos as unknown as { cnpj?: string }[]) ?? [];
+  if (!candidatos.some((c) => soDigitos(c.cnpj ?? "") === cnpj) || !cnpjValido(cnpj)) throw new Error("Candidato inválido.");
+  const { error } = await db.from("leads").update({
+    cnpj, cnpj_origem: "cnpja", cnpj_fonte_url: `https://cnpja.com/office/${cnpj}`,
+    cnpj_status: "na_fila", cnpj_motivo: "Candidato escolhido por você; aguardando validação dos dados do CNPJ.", cnpja_buscado: true,
+  }).eq("id", leadId);
+  if (error) throw new Error("Não foi possível selecionar este CNPJ.");
+  await enfileirar(userId, leadId, "cnpj");
+  await atualizarEstadoLead(leadId);
+}
+
 export async function previsaoFila() {
   const cfg = await lerConfig();
   const { count } = await db.from("tarefas").select("id", { count: "exact", head: true }).eq("tipo", "cnpj").in("status", ["pendente", "em_processamento"]);
