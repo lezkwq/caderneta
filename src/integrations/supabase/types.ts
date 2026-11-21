@@ -62,6 +62,7 @@ export type Database = {
           nicho: string | null
           pais: string | null
           quantidade: number | null
+          so_sem_site: boolean
           status: string
           tipo: string
           titulo: string
@@ -80,6 +81,7 @@ export type Database = {
           nicho?: string | null
           pais?: string | null
           quantidade?: number | null
+          so_sem_site?: boolean
           status?: string
           tipo: string
           titulo: string
@@ -98,6 +100,7 @@ export type Database = {
           nicho?: string | null
           pais?: string | null
           quantidade?: number | null
+          so_sem_site?: boolean
           status?: string
           tipo?: string
           titulo?: string
@@ -128,6 +131,24 @@ export type Database = {
         }
         Relationships: []
       }
+      cnpja_cache: {
+        Row: {
+          chave: string
+          criado_em: string
+          resposta: Json
+        }
+        Insert: {
+          chave: string
+          criado_em?: string
+          resposta: Json
+        }
+        Update: {
+          chave?: string
+          criado_em?: string
+          resposta?: Json
+        }
+        Relationships: []
+      }
       leads: {
         Row: {
           busca_id: string
@@ -135,10 +156,12 @@ export type Database = {
           cep: string | null
           cidade: string | null
           cnpj: string | null
+          cnpj_candidatos: Json
           cnpj_fonte_url: string | null
           cnpj_motivo: string | null
           cnpj_origem: string | null
           cnpj_status: string
+          cnpja_buscado: boolean
           contatado: boolean
           created_at: string
           dono: string | null
@@ -157,6 +180,7 @@ export type Database = {
           place_id: string | null
           razao_social: string | null
           site: string | null
+          site_proprio: boolean
           situacao: string | null
           socios: Json
           status: string
@@ -171,10 +195,12 @@ export type Database = {
           cep?: string | null
           cidade?: string | null
           cnpj?: string | null
+          cnpj_candidatos?: Json
           cnpj_fonte_url?: string | null
           cnpj_motivo?: string | null
           cnpj_origem?: string | null
           cnpj_status?: string
+          cnpja_buscado?: boolean
           contatado?: boolean
           created_at?: string
           dono?: string | null
@@ -193,6 +219,7 @@ export type Database = {
           place_id?: string | null
           razao_social?: string | null
           site?: string | null
+          site_proprio?: boolean
           situacao?: string | null
           socios?: Json
           status?: string
@@ -207,10 +234,12 @@ export type Database = {
           cep?: string | null
           cidade?: string | null
           cnpj?: string | null
+          cnpj_candidatos?: Json
           cnpj_fonte_url?: string | null
           cnpj_motivo?: string | null
           cnpj_origem?: string | null
           cnpj_status?: string
+          cnpja_buscado?: boolean
           contatado?: boolean
           created_at?: string
           dono?: string | null
@@ -229,6 +258,7 @@ export type Database = {
           place_id?: string | null
           razao_social?: string | null
           site?: string | null
+          site_proprio?: boolean
           situacao?: string | null
           socios?: Json
           status?: string
@@ -246,6 +276,24 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      nicho_cnae: {
+        Row: {
+          cnae: string
+          descricao: string | null
+          nicho: string
+        }
+        Insert: {
+          cnae: string
+          descricao?: string | null
+          nicho: string
+        }
+        Update: {
+          cnae?: string
+          descricao?: string | null
+          nicho?: string
+        }
+        Relationships: []
       }
       profiles: {
         Row: {
