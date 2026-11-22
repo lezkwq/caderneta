@@ -43,3 +43,10 @@
 - Adiciona pausa/retomada, status por lead e estimativa de tempo; tarefas de buscas pausadas ficam na fila e podem ser retomadas sem apagar registros.
 - Todas as requisições CNPJá (`/credit`, `/zip` e `/office`) usam reserva atômica global com intervalo de 6,1 s (máximo de 10 por minuto). Saldo abaixo de 10 bloqueia e avisa; respostas 429 voltam à fila com espera, no máximo três tentativas.
 - Sem mudança de esquema, migration ou RLS. `bun run build`, `bun test` (28 testes) e `bun x tsc --noEmit` passaram; busca real não foi executada localmente porque depende dos Secrets do Lovable.
+
+## Histórico e controle da fila (2026-11-22)
+- Histórico lista buscas próprias, data, status, quantidade de empresas e tarefas de fila; consumo de créditos CNPJá aparece como “sem registro”, pois o sistema não grava o uso por busca.
+- Ações de pausar/retomar, cancelar fila e excluir busca usam autenticação e verificam a propriedade da busca. Cancelar preserva resultados; excluir para o worker, remove tarefas antes dos leads e deixa a exclusão em cascata como proteção adicional.
+- O worker cancela tarefas órfãs e de buscas canceladas antes de processá-las; a previsão exclui tarefas órfãs, canceladas e pausadas.
+- A tela de resultados separa itens CNPJá desta busca e de outras buscas do usuário, com link para o histórico. A estimativa usa a fila CNPJá global e até três chamadas de API por tarefa no limite de 10 por minuto.
+- Sem alteração de esquema, migration ou RLS. `bun run build`, `bun test` (31 testes) e `bun x tsc --noEmit` passaram.

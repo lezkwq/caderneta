@@ -7,6 +7,7 @@ import type { Database } from "@/integrations/supabase/types";
 import { decidir, ehSiteProprio, extrairCandidatosCnpja, limparNome, type CandidatoCnpja } from "@/lib/candidatos";
 import { analisarHtml, baixarPagina, urlPermitida } from "@/lib/site-fetch.server";
 import { selecionarResultadosMaps, mapsResultKey } from "@/lib/maps-results";
+import { estimarFilaCnpjaSegundos, planejarCancelamentoFila, planejarExclusaoFila } from "@/lib/fila-utils";
 
 const db = supabaseAdmin;
 type TarefaUpd = Database["public"]["Tables"]["tarefas"]["Update"];
@@ -60,10 +61,28 @@ interface ItemMaps {
 
 // ───────────── Tarefas ─────────────
 async function enfileirar(userId: string, leadId: string, tipo: "site" | "cnpj" | "busca_cnpj" | "cnpja", atrasoSeg = 0) {
-  await db.from("tarefas").insert({ user_id: userId, lead_id: leadId, tipo, executar_apos: new Date(Date.now() + atrasoSeg * 1000).toISOString() });
+  const { data: alvo } = await db.from("leads").select("id, buscas!inner(status)").eq("id", leadId).maybeSingle();
+  const busca = alvo?.buscas as unknown as { status?: string } | null;
+  if (!alvo || busca?.status === "cancelada") return;
+  const { data: criada } = await db.from("tarefas").insert({ user_id: userId, lead_id: leadId, tipo, executar_apos: new Date(Date.now() + atrasoSeg * 1000).toISOString() }).select("id").maybeSingle();
+  if (!criada) return;
+  // Fecha a corrida entre a primeira validação e o insert se a busca foi cancelada nesse intervalo.
+  const { data: atual } = await db.from("leads").select("id, buscas!inner(status)").eq("id", leadId).maybeSingle();
+  const buscaAtual = atual?.buscas as unknown as { status?: string } | null;
+  if (!atual || buscaAtual?.status === "cancelada") {
+    await db.from("tarefas").update({ status: "cancelada", reservado_em: null }).eq("id", criada.id);
+  }
 }
-async function concluirTarefa(id: string) { await db.from("tarefas").update({ status: "feito" }).eq("id", id); }
+async function concluirTarefa(id: string) { await db.from("tarefas").update({ status: "feito" }).eq("id", id).eq("status", "em_processamento"); }
 async function adiarTarefa(id: string, seg: number, contaTentativa = true) {
+  const { data: existente } = await db.from("tarefas").select("id, lead_id").eq("id", id).maybeSingle();
+  if (!existente) return;
+  const { data: alvo } = await db.from("leads").select("buscas!inner(status)").eq("id", existente.lead_id).maybeSingle();
+  const busca = alvo?.buscas as unknown as { status?: string } | null;
+  if (!alvo || busca?.status === "cancelada") {
+    await db.from("tarefas").update({ status: "cancelada", reservado_em: null }).eq("id", id);
+    return;
+  }
   const upd: TarefaUpd = { status: "pendente", reservado_em: null, executar_apos: new Date(Date.now() + seg * 1000).toISOString() };
   if (!contaTentativa) {
     const { data } = await db.from("tarefas").select("tentativas").eq("id", id).single();
@@ -72,11 +91,23 @@ async function adiarTarefa(id: string, seg: number, contaTentativa = true) {
   await db.from("tarefas").update(upd).eq("id", id);
 }
 
-async function adiarSeBuscaPausada(t: { id: string; lead_id: string }): Promise<boolean> {
+async function impedirTarefaInvalida(t: { id: string; lead_id: string }): Promise<boolean> {
   const { data } = await db.from("leads").select("buscas!inner(status)").eq("id", t.lead_id).maybeSingle();
   const busca = data?.buscas as unknown as { status?: string } | null;
+  if (busca?.status === "cancelada" || !data) {
+    await db.from("tarefas").update({ status: "cancelada", reservado_em: null }).eq("id", t.id);
+    return true;
+  }
   if (busca?.status !== "pausada") return false;
   await adiarTarefa(t.id, 3600, false);
+  return true;
+}
+
+async function cancelarSeBuscaEncerrada(t: { id: string; lead_id: string }): Promise<boolean> {
+  const { data } = await db.from("leads").select("buscas!inner(status)").eq("id", t.lead_id).maybeSingle();
+  const busca = data?.buscas as unknown as { status?: string } | null;
+  if (data && busca?.status !== "cancelada") return false;
+  await db.from("tarefas").update({ status: "cancelada", reservado_em: null }).eq("id", t.id);
   return true;
 }
 
@@ -144,7 +175,7 @@ async function atualizarEstadoLead(leadId: string) {
 
 async function atualizarEstadoBusca(buscaId: string) {
   const { data: b } = await db.from("buscas").select("status").eq("id", buscaId).maybeSingle();
-  if (!b || ["buscando", "importando", "pausada", "erro"].includes(b.status)) return;
+  if (!b || ["buscando", "importando", "pausada", "cancelada", "erro"].includes(b.status)) return;
   const { count } = await db.from("leads").select("id", { count: "exact", head: true }).eq("busca_id", buscaId).neq("status", "concluido");
   const { count: total } = await db.from("leads").select("id", { count: "exact", head: true }).eq("busca_id", buscaId);
   await db.from("buscas").update({ status: (count ?? 0) > 0 ? "processando" : "concluida", total_leads: total ?? 0 }).eq("id", buscaId);
@@ -264,7 +295,7 @@ export function ufDeNome(s: string): string {
 
 // ───────────── Etapa 2: site ─────────────
 async function processarSite(tarefa: { id: string; lead_id: string; user_id: string }) {
-  if (await adiarSeBuscaPausada(tarefa)) return;
+  if (await impedirTarefaInvalida(tarefa)) return;
   const { data: lead } = await db.from("leads").select("id, site, cnpj").eq("id", tarefa.lead_id).maybeSingle();
   if (!lead?.site) { await concluirTarefa(tarefa.id); return; }
   const base = urlPermitida(lead.site);
@@ -276,9 +307,10 @@ async function processarSite(tarefa: { id: string; lead_id: string; user_id: str
   }
   const cnpjs: { cnpj: string; url: string }[] = [];
   for (const p of paginas.slice(0, 3)) {
-    if (await adiarSeBuscaPausada(tarefa)) return;
+    if (await impedirTarefaInvalida(tarefa)) return;
     const pg = await baixarPagina(p);
     if (!pg) continue;
+    if (await impedirTarefaInvalida(tarefa)) return;
     const a = analisarHtml(pg.html, pg.url, extrairCnpjs);
     cnpjs.push(...a.cnpjs);
     const texto = pg.html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
@@ -293,6 +325,7 @@ async function processarSite(tarefa: { id: string; lead_id: string; user_id: str
       await adicionarTelefone(tarefa.user_id, lead.id, t.bruto, { tipo: t.whatsapp ? "whatsapp_site" : "site", url: t.url, contexto: contexto.slice(0, 400) });
     }
   }
+  if (await cancelarSeBuscaEncerrada(tarefa)) return;
   if (!lead.cnpj) {
     const achado = cnpjs[0];
     if (achado) {
@@ -309,13 +342,14 @@ async function processarSite(tarefa: { id: string; lead_id: string; user_id: str
 
 // ───────────── Etapa 2b: busca opcional "nome + cidade + CNPJ" ─────────────
 async function processarBuscaCnpj(tarefa: { id: string; lead_id: string; user_id: string }) {
-  if (await adiarSeBuscaPausada(tarefa)) return;
+  if (await impedirTarefaInvalida(tarefa)) return;
   const cfg = await lerConfig();
   const { data: lead } = await db.from("leads").select("id, nome, cidade, cnpj").eq("id", tarefa.lead_id).maybeSingle();
   if (!lead || lead.cnpj || !cfg.buscaCnpjGoogle) { await concluirTarefa(tarefa.id); if (lead) await atualizarEstadoLead(lead.id); return; }
   try {
     const url = `${APIFY}/acts/${encodeURIComponent(cfg.searchActor)}/run-sync-get-dataset-items?timeout=60&maxTotalChargeUsd=${cfg.maxChargeUsd}`;
     const r = await fetch(url, { method: "POST", headers: apifyHeaders(), body: JSON.stringify({ queries: `"${lead.nome}" ${lead.cidade ?? ""} CNPJ`, maxPagesPerQuery: 1, resultsPerPage: 10, languageCode: "pt-BR", countryCode: "br" }) });
+    if (await cancelarSeBuscaEncerrada(tarefa)) return;
     if (r.ok) {
       const itens = (await r.json()) as { organicResults?: { url?: string; title?: string; description?: string }[] }[];
       for (const res of itens.flatMap((i) => i.organicResults ?? [])) {
@@ -403,7 +437,7 @@ export function conferirEndereco(lead: { cidade: string | null; uf: string | nul
 }
 
 async function processarCnpj(tarefa: { id: string; lead_id: string; user_id: string; tentativas: number }) {
-  if (await adiarSeBuscaPausada(tarefa)) return "pausado";
+  if (await impedirTarefaInvalida(tarefa)) return "pausado";
   const cfg = await lerConfig();
   const { data: lead } = await db.from("leads").select("*").eq("id", tarefa.lead_id).maybeSingle();
   if (!lead?.cnpj || !cnpjValido(lead.cnpj)) { await concluirTarefa(tarefa.id); if (lead) await atualizarEstadoLead(lead.id); return "ok"; }
@@ -417,6 +451,7 @@ async function processarCnpj(tarefa: { id: string; lead_id: string; user_id: str
     if (!slot) { await adiarTarefa(tarefa.id, cfg.cnpjIntervalo, false); return "aguardando"; }
     await db.from("leads").update({ cnpj_status: "consultando" }).eq("id", lead.id);
     const r = await consultarCnpj(lead.cnpj);
+    if (await cancelarSeBuscaEncerrada(tarefa)) return "cancelada";
     if (r.tipo === "limite") {
       await db.from("api_estado").update({ bloqueado_ate: new Date(Date.now() + r.esperarSeg * 1000).toISOString() }).eq("chave", "cnpj");
       await db.from("leads").update({ cnpj_status: "na_fila" }).eq("id", lead.id);
@@ -465,11 +500,11 @@ export async function processarFila() {
   const resumo = { runs: 0, sites: 0, buscasCnpj: 0, cnpj: "" as string, importacoes: [] as { buscaId: string; coletadas: number; unicas: number; mantidas: number }[] };
   resumo.importacoes = await acompanharRuns(); resumo.runs = 1;
   const { data: sites } = await db.rpc("reservar_tarefas", { _tipo: "site", _limite: 2 });
-  for (const t of sites ?? []) { if (Date.now() - inicio > 60000) { await adiarTarefa(t.id, 5, false); continue; } await processarSite(t).catch(() => concluirTarefa(t.id)); resumo.sites++; }
+  for (const t of sites ?? []) { if (Date.now() - inicio > 60000) { await adiarTarefa(t.id, 5, false); continue; } await processarSite(t).catch(async () => { if (!await impedirTarefaInvalida(t)) await concluirTarefa(t.id); }); resumo.sites++; }
   const { data: bcs } = await db.rpc("reservar_tarefas", { _tipo: "busca_cnpj", _limite: 1 });
-  for (const t of bcs ?? []) { await processarBuscaCnpj(t).catch(() => concluirTarefa(t.id)); resumo.buscasCnpj++; }
+  for (const t of bcs ?? []) { await processarBuscaCnpj(t).catch(async () => { if (!await impedirTarefaInvalida(t)) await concluirTarefa(t.id); }); resumo.buscasCnpj++; }
   const { data: cja } = await db.rpc("reservar_tarefas", { _tipo: "cnpja", _limite: 1 });
-  for (const t of cja ?? []) await processarCnpja({ ...t, tentativas: t.tentativas }).catch(() => adiarTarefa(t.id, 120));
+  for (const t of cja ?? []) await processarCnpja({ ...t, tentativas: t.tentativas }).catch(async () => { if (!await impedirTarefaInvalida(t)) await adiarTarefa(t.id, 120); });
   const { data: cn } = await db.rpc("reservar_tarefas", { _tipo: "cnpj", _limite: 1 });
   for (const t of cn ?? []) resumo.cnpj = await processarCnpj(t).catch(() => { void adiarTarefa(t.id, 60); return "falha"; });
   return resumo;
@@ -582,20 +617,130 @@ export async function controlarBusca(userId: string, buscaId: string, acao: "pau
   if (ids.length) await db.from("tarefas").update({ executar_apos: new Date().toISOString() }).in("lead_id", ids).eq("status", "pendente");
 }
 
-export async function previsaoFila() {
+export async function listarHistorico(userId: string) {
+  const [{ data: buscas, error: erroBuscas }, { data: leads, error: erroLeads }, { data: tarefas, error: erroTarefas }] = await Promise.all([
+    db.from("buscas").select("id, titulo, created_at, status, quantidade, total_leads").eq("user_id", userId).order("created_at", { ascending: false }).limit(200),
+    db.from("leads").select("id, busca_id").eq("user_id", userId),
+    db.from("tarefas").select("id, lead_id, tipo, status").eq("user_id", userId),
+  ]);
+  if (erroBuscas || erroLeads || erroTarefas) throw new Error("Não foi possível carregar o histórico.");
+  const buscaPorLead = new Map((leads ?? []).map((l) => [l.id, l.busca_id]));
+  const statusPorBusca = new Map((buscas ?? []).map((b) => [b.id, b.status]));
+  const empresasPorBusca = new Map<string, number>();
+  for (const l of leads ?? []) empresasPorBusca.set(l.busca_id, (empresasPorBusca.get(l.busca_id) ?? 0) + 1);
+  const filaPorBusca = new Map<string, number>();
+  for (const t of tarefas ?? []) {
+    const buscaId = buscaPorLead.get(t.lead_id);
+    if (buscaId && !["cancelada", "pausada", "erro"].includes(statusPorBusca.get(buscaId) ?? "erro") && ["pendente", "em_processamento"].includes(t.status)) {
+      filaPorBusca.set(buscaId, (filaPorBusca.get(buscaId) ?? 0) + 1);
+    }
+  }
+  return (buscas ?? []).map((b) => ({
+    ...b,
+    empresas: empresasPorBusca.get(b.id) ?? 0,
+    itensNaFila: filaPorBusca.get(b.id) ?? 0,
+    creditosCnpjaUsados: null as number | null,
+  }));
+}
+
+export async function cancelarFilaBusca(userId: string, buscaId: string) {
+  const { data: busca } = await db.from("buscas").select("id, status").eq("id", buscaId).eq("user_id", userId).maybeSingle();
+  if (!busca) throw new Error("Busca não encontrada.");
+  const { error: erroStatus } = await db.from("buscas").update({ status: "cancelada" }).eq("id", buscaId).eq("user_id", userId);
+  if (erroStatus) throw new Error("Não foi possível cancelar a busca.");
+  const { data: leads, error: erroLeads } = await db.from("leads").select("id").eq("busca_id", buscaId);
+  if (erroLeads) throw new Error("Não foi possível listar as empresas da busca.");
+  const ids = (leads ?? []).map((l) => l.id);
+  if (!ids.length) return 0;
+  const { data: tarefas, error: erroTarefas } = await db.from("tarefas").select("id, lead_id, status").in("lead_id", ids);
+  if (erroTarefas) throw new Error("Não foi possível listar os itens da fila.");
+  const idsParaCancelar = planejarCancelamentoFila(tarefas ?? [], ids);
+  if (idsParaCancelar.length) {
+    const { error } = await db.from("tarefas").update({ status: "cancelada", reservado_em: null }).in("id", idsParaCancelar);
+    if (error) throw new Error("A busca foi marcada como cancelada, mas não foi possível limpar todos os itens da fila.");
+  }
+  return idsParaCancelar.length;
+}
+
+export async function excluirBusca(userId: string, buscaId: string) {
+  const { data: busca } = await db.from("buscas").select("id").eq("id", buscaId).eq("user_id", userId).maybeSingle();
+  if (!busca) throw new Error("Busca não encontrada.");
+  const { error: erroStatus } = await db.from("buscas").update({ status: "cancelada" }).eq("id", buscaId).eq("user_id", userId);
+  if (erroStatus) throw new Error("Não foi possível parar a busca antes da exclusão.");
+  const { data: leads, error: erroLeads } = await db.from("leads").select("id").eq("busca_id", buscaId);
+  if (erroLeads) throw new Error("Não foi possível listar as empresas da busca.");
+  const ids = (leads ?? []).map((l) => l.id);
+  if (ids.length) {
+    const { data: tarefas, error: erroTarefas } = await db.from("tarefas").select("id, lead_id, status").in("lead_id", ids);
+    if (erroTarefas) throw new Error("Não foi possível listar os itens da fila.");
+    const idsParaExcluir = planejarExclusaoFila(tarefas ?? [], ids);
+    if (idsParaExcluir.length) {
+      const { error } = await db.from("tarefas").delete().in("id", idsParaExcluir);
+      if (error) throw new Error("Não foi possível excluir todos os itens da fila.");
+    }
+    const { error } = await db.from("leads").delete().eq("busca_id", buscaId);
+    if (error) throw new Error("Não foi possível excluir as empresas da busca.");
+  }
+  const { error } = await db.from("buscas").delete().eq("id", buscaId).eq("user_id", userId);
+  if (error) throw new Error("Não foi possível excluir a busca.");
+}
+
+export async function previsaoFila(userId?: string, buscaId?: string) {
   const cfg = await lerConfig();
-  const { count } = await db.from("tarefas").select("id", { count: "exact", head: true }).eq("tipo", "cnpj").in("status", ["pendente", "em_processamento"]);
-  const { count: countCnpja } = await db.from("tarefas").select("id", { count: "exact", head: true }).eq("tipo", "cnpja").in("status", ["pendente", "em_processamento"]);
-  const [{ data: est }, { data: estCnpja }, { data: credito }] = await Promise.all([
+  const [{ data: tarefas }, { data: est }, { data: estCnpja }, { data: credito }] = await Promise.all([
+    db.from("tarefas").select("id, lead_id, user_id, tipo, status, executar_apos").in("tipo", ["cnpj", "cnpja"]).in("status", ["pendente", "em_processamento"]),
     db.from("api_estado").select("bloqueado_ate").eq("chave", "cnpj").maybeSingle(),
-    db.from("api_estado").select("bloqueado_ate").eq("chave", "cnpja").maybeSingle(),
+    db.from("api_estado").select("ultima_consulta, bloqueado_ate").eq("chave", "cnpja").maybeSingle(),
     db.from("cnpja_cache").select("resposta, criado_em").eq("chave", "credit:temporario").maybeSingle(),
   ]);
+  const filaBruta = tarefas ?? [];
+  const leadIds = [...new Set(filaBruta.map((t) => t.lead_id))];
+  const { data: leadsFila } = leadIds.length
+    ? await db.from("leads").select("id, user_id, busca_id, buscas!inner(status)").in("id", leadIds)
+    : { data: [] };
+  const porLead = new Map((leadsFila ?? []).map((l) => [l.id, {
+    userId: l.user_id, buscaId: l.busca_id,
+    status: ((l.buscas as unknown as { status?: string } | null)?.status ?? "erro"),
+  }]));
+  const invalidas = filaBruta.filter((t) => {
+    const lead = porLead.get(t.lead_id);
+    return !lead || ["cancelada", "erro"].includes(lead.status);
+  });
+  const invalidIds = invalidas.map((t) => t.id);
+  if (invalidIds.length) await db.from("tarefas").update({ status: "cancelada", reservado_em: null }).in("id", invalidIds);
+  const filaGlobal = filaBruta.filter((t) => {
+    const lead = porLead.get(t.lead_id);
+    return !!lead && !["cancelada", "pausada", "erro"].includes(lead.status);
+  });
+  const filaCnpja = filaGlobal.filter((t) => t.tipo === "cnpja");
+  const filaCnpj = filaGlobal.filter((t) => t.tipo === "cnpj");
+  const destaBusca = userId && buscaId ? filaCnpja.filter((t) => porLead.get(t.lead_id)?.buscaId === buscaId).length : 0;
+  const outrasBuscas = userId && buscaId ? filaCnpja.filter((t) => {
+    const lead = porLead.get(t.lead_id);
+    return lead?.userId === userId && lead.buscaId !== buscaId;
+  }).length : 0;
+  let futurasDaBusca = 0;
+  if (userId && buscaId) {
+    const { data: busca } = await db.from("buscas").select("id, status, quantidade").eq("id", buscaId).eq("user_id", userId).maybeSingle();
+    if (busca && !["concluida", "cancelada", "erro", "pausada"].includes(busca.status)) {
+      const { data: leadsBusca } = await db.from("leads").select("id, status, cnpj, cnpja_buscado").eq("busca_id", buscaId);
+      const ativos = (leadsBusca ?? []).filter((l) => l.status !== "concluido" && !l.cnpj && !l.cnpja_buscado && !filaCnpja.some((t) => t.lead_id === l.id)).length;
+      futurasDaBusca = Math.max(Math.max(0, (busca.quantidade ?? 0) - (leadsBusca?.length ?? 0)), ativos);
+    }
+  }
   const bloqueio = est?.bloqueado_ate && new Date(est.bloqueado_ate) > new Date() ? est.bloqueado_ate : null;
   const bloqueioCnpja = estCnpja?.bloqueado_ate && new Date(estCnpja.bloqueado_ate) > new Date() ? estCnpja.bloqueado_ate : null;
   const saldoCnpjaAtual = (credito?.resposta as { saldo?: unknown } | null)?.saldo;
   const creditoValido = !!credito?.criado_em && Date.now() - new Date(credito.criado_em).getTime() < 30_000;
-  return { cnpjNaFila: count ?? 0, cnpjaNaFila: countCnpja ?? 0, intervaloSeg: cfg.cnpjIntervalo, bloqueadoAte: bloqueio, bloqueadoCnpjaAte: bloqueioCnpja, cnpjaSaldoBaixo: typeof saldoCnpjaAtual === "number" && saldoCnpjaAtual < cfg.cnpjaSaldoMinimo && (creditoValido || !!bloqueioCnpja), buscasPorDia: cfg.buscasPorDia };
+  const ultimaConsulta = estCnpja?.ultima_consulta ? new Date(estCnpja.ultima_consulta).getTime() : 0;
+  const esperaSlotMs = Math.max(
+    0,
+    ultimaConsulta + INTERVALO_CNPJA_MS - Date.now(),
+    bloqueioCnpja ? new Date(bloqueioCnpja).getTime() - Date.now() : 0,
+    ...filaCnpja.map((t) => t.executar_apos ? new Date(t.executar_apos).getTime() - Date.now() : 0),
+  );
+  const tempoEstimadoSegundos = estimarFilaCnpjaSegundos({ itensGlobal: filaCnpja.length, itensFuturosDaBusca: futurasDaBusca, esperaProximoSlotMs: esperaSlotMs });
+  return { cnpjNaFila: filaCnpj.length, cnpjaNaFila: filaCnpja.length, cnpjaDestaBusca: destaBusca, cnpjaOutrasBuscas: outrasBuscas, tempoEstimadoSegundos, intervaloSeg: cfg.cnpjIntervalo, bloqueadoAte: bloqueio, bloqueadoCnpjaAte: bloqueioCnpja, cnpjaSaldoBaixo: typeof saldoCnpjaAtual === "number" && saldoCnpjaAtual < cfg.cnpjaSaldoMinimo && (creditoValido || !!bloqueioCnpja), buscasPorDia: cfg.buscasPorDia };
 }
 
 
@@ -703,6 +848,7 @@ async function cnaeDoNicho(nicho: string | null): Promise<string | null> {
 }
 
 async function processarCnpja(tarefa: { id: string; lead_id: string; user_id: string; tentativas: number }) {
+  if (await impedirTarefaInvalida(tarefa)) return;
   const cfg = await lerConfig();
   const { data: lead } = await db.from("leads").select("*, buscas!inner(nicho, status)").eq("id", tarefa.lead_id).maybeSingle();
   const fim = async (upd?: LeadUpd) => {
@@ -715,8 +861,8 @@ async function processarCnpja(tarefa: { id: string; lead_id: string; user_id: st
     await concluirTarefa(tarefa.id);
     if (lead) { await recalcularScore(lead.id); await atualizarEstadoLead(lead.id); }
   };
-  if (lead && (lead.buscas as unknown as { status: string }).status === "pausada") { await adiarTarefa(tarefa.id, 3600, false); return; }
-  if (!lead || lead.cnpj) return fim();
+  if (!lead) { await db.from("tarefas").update({ status: "cancelada", reservado_em: null }).eq("id", tarefa.id); return; }
+  if (lead.cnpj) return fim();
   if (lead.place_id) {
     const { data: anterior } = await db.from("leads").select("cnpj, cnpj_origem, cnpj_fonte_url, cnpj_candidatos, cnpj_status, cnpj_motivo, razao_social, nome_fantasia, situacao, natureza, municipio_receita, uf_receita, email_receita, dono, dono_fonte, socios")
       .eq("place_id", lead.place_id).eq("cnpja_buscado", true).neq("id", lead.id).limit(1).maybeSingle();
@@ -743,6 +889,7 @@ async function processarCnpja(tarefa: { id: string; lead_id: string; user_id: st
   if (!termos) return fim({ cnpja_buscado: true, cnpj_status: "nao_encontrado", cnpj_motivo: "Nome muito genérico para buscar o CNPJ." });
 
   const saldoInfo = await saldoCnpja();
+  if (await impedirTarefaInvalida(tarefa)) return;
   if (saldoInfo.esperarSeg) {
     await db.from("leads").update({ cnpj_status: "na_fila", cnpj_motivo: "Consulta do CNPJá aguardando a janela global de 10 por minuto." }).eq("id", lead.id);
     await adiarTarefa(tarefa.id, saldoInfo.esperarSeg, false);
@@ -762,6 +909,7 @@ async function processarCnpja(tarefa: { id: string; lead_id: string; user_id: st
 
   // Cache permanente por consulta: nunca repete a mesma busca.
   const geo = lead.cep ? await municipioPorCep(lead.cep) : null;
+  if (await impedirTarefaInvalida(tarefa)) return;
   if (geo?.esperarSeg) {
     await db.from("leads").update({ cnpj_status: "na_fila", cnpj_motivo: "Consulta de CEP aguardando a janela global de 10 por minuto do CNPJá." }).eq("id", lead.id);
     await adiarTarefa(tarefa.id, geo.esperarSeg, false);
@@ -790,9 +938,11 @@ async function processarCnpja(tarefa: { id: string; lead_id: string; user_id: st
     let req: Awaited<ReturnType<typeof requisitarCnpja>>;
     try { req = await requisitarCnpja(`${CNPJA}/office?${q}`); }
     catch {
+      if (await cancelarSeBuscaEncerrada(tarefa)) return;
       await fim({ cnpja_buscado: true, cnpj_status: "erro", cnpj_motivo: "Não foi possível concluir a busca de nome no CNPJá. O lead segue com os telefones já encontrados." });
       return;
     }
+    if (await cancelarSeBuscaEncerrada(tarefa)) return;
     if ("esperarSeg" in req) {
       if (req.tipo === "janela") {
         const atualizacao = { cnpja_buscado: false, cnpj_status: "na_fila", cnpj_motivo: "Consulta aguardando a janela global de 10 por minuto do CNPJá." };

@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import { Building2, ChevronDown, Download, ExternalLink, MessageCircle, Phone, Smartphone, Trash2, UserRound, Users, CheckCheck, Pause, Play } from "lucide-react";
@@ -28,10 +29,10 @@ export function Resultados({ buscaId }: { buscaId: string }) {
   const { data: perfil } = useQuery(perfilQuery);
   const { data, isPending, isError, refetch } = useQuery({
     ...buscaQuery(buscaId),
-    refetchInterval: (q) => (q.state.data?.busca && q.state.data.busca.status !== "concluida" && q.state.data.busca.status !== "erro" ? 5000 : false),
+    refetchInterval: (q) => (q.state.data?.busca && !["concluida", "erro", "cancelada"].includes(q.state.data.busca.status) ? 5000 : false),
   });
-  const ativo = !!data?.busca && !["concluida", "erro", "pausada"].includes(data.busca.status);
-  const [fila, setFila] = useState<{ cnpjNaFila: number; cnpjaNaFila: number; bloqueadoAte: string | null; bloqueadoCnpjaAte: string | null; cnpjaSaldoBaixo: boolean } | null>(null);
+  const ativo = !!data?.busca && !["concluida", "erro", "pausada", "cancelada"].includes(data.busca.status);
+  const [fila, setFila] = useState<{ cnpjNaFila: number; cnpjaNaFila: number; cnpjaDestaBusca: number; cnpjaOutrasBuscas: number; tempoEstimadoSegundos: number; bloqueadoAte: string | null; bloqueadoCnpjaAte: string | null; cnpjaSaldoBaixo: boolean } | null>(null);
   const [metricas, setMetricas] = useState<{ coletadas: number; unicas: number; mantidas: number } | null>(null);
   const [controlando, setControlando] = useState(false);
   const [agora, setAgora] = useState(Date.now());
@@ -46,7 +47,7 @@ export function Resultados({ buscaId }: { buscaId: string }) {
   useEffect(() => {
     if (!ativo) return;
     let vivo = true;
-    const rodar = () => processar().then((r) => { if (vivo) {
+    const rodar = () => processar({ data: { buscaId } }).then((r) => { if (vivo) {
       setFila(r);
       const info = r.importacoes?.find((x) => x.buscaId === buscaId);
       if (info) { const m = { coletadas: info.coletadas, unicas: info.unicas, mantidas: info.mantidas }; setMetricas(m); localStorage.setItem(`caderneta-mapas-${buscaId}`, JSON.stringify(m)); }
@@ -88,7 +89,8 @@ export function Resultados({ buscaId }: { buscaId: string }) {
   const posicao = emAndamento ? todos.findIndex((l) => l.id === emAndamento.id) + 1 : Math.min(concluidos + 1, Math.max(alvo, 1));
   const restantes = Math.max(0, todos.length - concluidos);
   const decorrido = Math.max(1000, agora - new Date(b.created_at).getTime());
-  const estimativaMs = concluidos > 0 ? Math.round(decorrido / concluidos * restantes) : b.status === "buscando" ? 120_000 : restantes * 20_000;
+  const estimativaLocalMs = concluidos > 0 ? Math.round(decorrido / concluidos * restantes) : b.status === "buscando" ? 120_000 : restantes * 20_000;
+  const estimativaMs = Math.max(estimativaLocalMs, (fila?.tempoEstimadoSegundos ?? 0) * 1000);
   const tempoRestante = b.status === "concluida" ? "concluída" : b.status === "pausada" ? "pausada" : estimativaMs < 60_000 ? `cerca de ${Math.max(1, Math.ceil(estimativaMs / 1000))} s` : `cerca de ${Math.ceil(estimativaMs / 60_000)} min`;
   const agrupar = b.tipo === "manual";
 
@@ -99,7 +101,8 @@ export function Resultados({ buscaId }: { buscaId: string }) {
   async function alternarPausa() {
     setControlando(true);
     try {
-      await controlar({ data: { buscaId, acao: b.status === "pausada" ? "retomar" : "pausar" } });
+      const r = await controlar({ data: { buscaId, acao: b.status === "pausada" ? "retomar" : "pausar" } });
+      setFila(r.fila);
       void qc.invalidateQueries({ queryKey: ["busca", buscaId] });
     } catch { toast.error("Não foi possível alterar o processamento da busca."); }
     finally { setControlando(false); }
@@ -137,8 +140,7 @@ export function Resultados({ buscaId }: { buscaId: string }) {
         <div className="flex flex-wrap items-center gap-3">
           <StatusBusca status={b.status} />
           <span className="text-sm">{concluidos} de {todos.length} empresas processadas</span>
-          {!['concluida', 'erro'].includes(b.status) && <Button variant="outline" className="min-h-11" loading={controlando} onClick={() => void alternarPausa()}><>{b.status === "pausada" ? <Play aria-hidden /> : <Pause aria-hidden />}{b.status === "pausada" ? "Retomar busca" : "Pausar busca"}</></Button>}
-          {fila && fila.cnpjaNaFila > 0 && <span className="text-sm text-muted-foreground">· {fila.cnpjaNaFila} buscas CNPJá na fila (limite global de 10 requisições/minuto)</span>}
+          {!['concluida', 'erro', 'cancelada'].includes(b.status) && <Button variant="outline" className="min-h-11" loading={controlando} onClick={() => void alternarPausa()}><>{b.status === "pausada" ? <Play aria-hidden /> : <Pause aria-hidden />}{b.status === "pausada" ? "Retomar busca" : "Pausar busca"}</></Button>}
           {fila?.bloqueadoAte && <Pill tone="atencao">Consulta de CNPJ em pausa até {new Date(fila.bloqueadoAte).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</Pill>}
           {fila?.bloqueadoCnpjaAte && <Pill tone="atencao">CNPJá em pausa até {new Date(fila.bloqueadoCnpjaAte).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</Pill>}
           {fila?.cnpjaSaldoBaixo && <Pill tone="erro">Saldo do CNPJá abaixo de 10: buscas pagas pausadas</Pill>}
@@ -149,8 +151,12 @@ export function Resultados({ buscaId }: { buscaId: string }) {
         <p className="mt-2 text-sm text-muted-foreground">
           {b.status === "buscando" ? "Buscando empresas no Google Maps." : emAndamento ? `${emAndamento.cnpj ? "Consultando dados de" : "Buscando CNPJ de"} ${emAndamento.nome}, ${posicao} de ${alvo}.` : b.status === "pausada" ? "O processamento está pausado e pode ser retomado." : b.status === "importando" ? "Deduplicando resultados e aplicando filtros." : "Aguardando a próxima empresa da fila."}
           {metricas && <> Coletadas {metricas.coletadas}, únicas {metricas.unicas}, mantidas {metricas.mantidas}.</>}
-          {b.status !== "pausada" && b.status !== "concluida" && <> Tempo estimado restante: {tempoRestante}.</>}
+          {!['pausada', 'concluida', 'cancelada', 'erro'].includes(b.status) && <> Tempo estimado restante: {tempoRestante}.</>}
         </p>
+        {fila && <p className="mt-2 text-sm text-muted-foreground">
+          {fila.cnpjaDestaBusca} itens desta busca na fila CNPJá.
+          {fila.cnpjaOutrasBuscas > 0 && <> {fila.cnpjaOutrasBuscas} itens de outras buscas na fila; <Link to="/historico" className="font-medium text-link underline underline-offset-2">ver histórico</Link>.</>}
+        </p>}
         {b.erro && <p className="mt-2 text-sm text-danger-text" role="alert">{b.erro}</p>}
       </div>
 
@@ -215,7 +221,7 @@ function EtapaLead({ lead }: { lead: Lead }) {
     : lead.cnpj_status === "consultando"
       ? lead.cnpj ? "Consultando dados do CNPJ" : "Buscando CNPJ"
       : "Na fila";
-  return <span className="text-xs font-medium text-muted-foreground">Etapa: {texto}</span>;
+  return <span className="inline-flex min-h-7 items-center gap-1 text-xs text-muted-foreground"><span className="font-semibold">Etapa:</span><span>{texto}</span></span>;
 }
 
 function TabelaLeads(p: ListaProps) {
@@ -236,7 +242,7 @@ function TabelaLeads(p: ListaProps) {
                   <td className="px-4 py-3"><div className="font-medium text-heading">{l.nome}</div><div className="text-sm text-muted-foreground">{[l.categoria, l.cidade].filter(Boolean).join(" · ")}</div></td>
                   <td className="px-4 py-3"><Dono l={l} /></td>
                   <td className="px-4 py-3">{tel ? <div className="space-y-1"><div className="font-medium text-heading">{formatarTelefone(tel.numero)} <span className="text-sm font-normal text-muted-foreground">{tel.tipo}</span></div><BadgeConfianca score={tel.score} /></div> : <span className="text-sm text-muted-foreground">—</span>}</td>
-                  <td className="px-4 py-3"><div className="space-y-2"><StatusCnpj status={l.cnpj_status} /><EtapaLead lead={l} /></div></td>
+                  <td className="px-4 py-3"><div className="flex flex-wrap items-center gap-x-2 gap-y-1"><StatusCnpj status={l.cnpj_status} /><EtapaLead lead={l} /></div></td>
                   <td className="px-4 py-3"><Acoes lead={l} tel={tel} abrirWa={p.abrirWa} /></td>
                   <td className="px-2 py-3 text-right">
                     <button aria-expanded={open} aria-label={open ? "Recolher detalhes" : "Ver detalhes"} onClick={() => p.setAberto(open ? null : l.id)} className="grid size-11 place-items-center rounded-full hover:bg-secondary"><ChevronDown className={`size-5 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden /></button>

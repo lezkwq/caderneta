@@ -39,6 +39,7 @@ export function StatusCnpj({ status }: { status: string }) {
 
 export function StatusBusca({ status }: { status: string }) {
   if (status === "pausada") return <Pill tone="atencao">Busca pausada</Pill>;
+  if (status === "cancelada") return <Pill tone="erro">Busca cancelada</Pill>;
   if (status === "importando") return <Pill icon={<Loader2 className="size-4 animate-spin" aria-hidden />}>Organizando resultados</Pill>;
   if (status === "concluida") return <Pill tone="ok" icon={<CheckCircle2 className="size-4 text-success" aria-hidden />}>Concluída</Pill>;
   if (status === "erro") return <Pill tone="erro" icon={<XCircle className="size-4 text-destructive" aria-hidden />}>Erro</Pill>;

@@ -58,21 +58,46 @@ export const controlarBusca = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const s = await import("@/lib/caderneta.server");
     await s.controlarBusca(context.userId, data.buscaId, data.acao);
+    return { ok: true, fila: await s.previsaoFila(context.userId, data.buscaId) };
+  });
+
+export const cancelarFilaBusca = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ buscaId: z.string().uuid() }).parse(d))
+  .handler(async ({ data, context }) => {
+    const s = await import("@/lib/caderneta.server");
+    return { cancelados: await s.cancelarFilaBusca(context.userId, data.buscaId) };
+  });
+
+export const excluirBusca = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ buscaId: z.string().uuid() }).parse(d))
+  .handler(async ({ data, context }) => {
+    const s = await import("@/lib/caderneta.server");
+    await s.excluirBusca(context.userId, data.buscaId);
     return { ok: true };
+  });
+
+export const carregarHistorico = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const s = await import("@/lib/caderneta.server");
+    return s.listarHistorico(context.userId);
   });
 
 export const processarAgora = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .handler(async () => {
+  .inputValidator((d: unknown) => z.object({ buscaId: z.string().uuid() }).parse(d))
+  .handler(async ({ data, context }) => {
     const s = await import("@/lib/caderneta.server");
     const processamento = await s.processarFila();
-    return { ...(await s.previsaoFila()), importacoes: processamento.importacoes };
+    return { ...(await s.previsaoFila(context.userId, data.buscaId)), importacoes: processamento.importacoes };
   });
 
 export const infoSistema = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
     const s = await import("@/lib/caderneta.server");
-    const [apify, fila, hoje] = await Promise.all([s.testarApify(), s.previsaoFila(), s.contarBuscasHoje(context.userId)]);
+    const [apify, fila, hoje] = await Promise.all([s.testarApify(), s.previsaoFila(context.userId), s.contarBuscasHoje(context.userId)]);
     return { apify, fila, buscasHoje: hoje };
   });
