@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decidir, ehSiteProprio, extrairCandidatosCnpja, limparNome } from "@/lib/candidatos";
+import { decidir, desempatarCandidatosSalvos, ehSiteProprio, extrairCandidatosCnpja, limparNome } from "@/lib/candidatos";
 
 describe("Limpeza do nome", () => {
   it("Odontologia Premier - Dentista em Blumenau vira premier", () => expect(limparNome("Odontologia Premier - Dentista em Blumenau", "Blumenau")).toBe("premier"));
@@ -27,7 +27,10 @@ describe("Decisão do candidato (casos reais)", () => {
       "8630504",
     );
     expect(r.tipo).toBe("confirmado");
-    if (r.tipo === "confirmado") expect(r.escolhido.cnpj).toBe("12345678000190");
+    if (r.tipo === "confirmado") {
+      expect(r.escolhido.cnpj).toBe("12345678000190");
+      expect(desempatarCandidatosSalvos(r.candidatos)?.cnpj).toBe("12345678000190");
+    }
   });
 
   it("(b) Cia do Sorriso com telefone do cadastro diferente: provável, confirmar", () => {

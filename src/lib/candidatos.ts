@@ -67,6 +67,18 @@ export type Decisao =
   | { tipo: "varios"; candidatos: Avaliacao[] }
   | { tipo: "nenhum"; candidatos: Avaliacao[] };
 
+/** Escolhe um resultado antigo já pontuado, sem repetir a chamada paga à CNPJá. */
+export function desempatarCandidatosSalvos(candidatos: Avaliacao[]): Avaliacao | null {
+  const unicos = new Map<string, Avaliacao>();
+  for (const c of candidatos) if (!unicos.has(c.cnpj)) unicos.set(c.cnpj, c);
+  const fortes = [...unicos.values()].filter((c) => c.bateNome && (c.bateTelefone || c.bateEndereco));
+  if (fortes.length === 1) return fortes[0] ?? null;
+  if (fortes.length < 2 || new Set(fortes.map((c) => c.cnpj.slice(0, 8))).size !== 1) return null;
+  const melhor = Math.max(...fortes.map((c) => c.pontos));
+  const melhores = fortes.filter((c) => c.pontos === melhor);
+  return melhores.length === 1 ? melhores[0] ?? null : null;
+}
+
 export function cnaeConfere(c: CandidatoCnpja, cnae: string | null): boolean {
   if (c.status?.id !== undefined && c.status.id !== null && c.status.id !== 2) return false;
   if (!cnae) return true;
@@ -122,16 +134,9 @@ export function decidir(lead: LeadParaComparar, registros: CandidatoCnpja[], cna
   const candidatos = [...unicos.values()].map((r) => avaliar(lead, r)).sort((x, y) => y.pontos - x.pontos);
   if (candidatos.length === 0) return { tipo: "nenhum", candidatos };
   const fortes = candidatos.filter((c) => c.bateNome && (c.bateTelefone || c.bateEndereco));
-  if (fortes.length === 1) return { tipo: "confirmado", escolhido: fortes[0] as Avaliacao, candidatos };
-  if (fortes.length > 1) {
-    const raizes = new Set(fortes.map((c) => c.cnpj.slice(0, 8)));
-    if (raizes.size === 1) {
-      const melhorPontuacao = Math.max(...fortes.map((c) => c.pontos));
-      const melhores = fortes.filter((c) => c.pontos === melhorPontuacao);
-      if (melhores.length === 1) return { tipo: "confirmado", escolhido: melhores[0] as Avaliacao, candidatos };
-    }
-    return { tipo: "varios", candidatos };
-  }
+  const escolhido = desempatarCandidatosSalvos(fortes);
+  if (escolhido) return { tipo: "confirmado", escolhido, candidatos };
+  if (fortes.length > 0) return { tipo: "varios", candidatos };
   if (candidatos.length === 1) return { tipo: "provavel", escolhido: candidatos[0] as Avaliacao, candidatos };
   return { tipo: "varios", candidatos };
 }

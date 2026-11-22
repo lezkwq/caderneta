@@ -53,6 +53,14 @@ export const escolherCnpjCandidato = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+export const reconciliarCandidatosSalvos = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ buscaId: z.string().uuid() }).parse(d))
+  .handler(async ({ data, context }) => {
+    const s = await import("@/lib/caderneta.server");
+    return { corrigidos: await s.reconciliarCandidatosSalvos(context.userId, data.buscaId) };
+  });
+
 export const controlarBusca = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => z.object({ buscaId: z.string().uuid(), acao: z.enum(["pausar", "retomar"]) }).parse(d))

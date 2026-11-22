@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
@@ -7,7 +7,7 @@ import { Building2, ChevronDown, Download, ExternalLink, MessageCircle, Phone, S
 import { supabase } from "@/integrations/supabase/client";
 import type { Database } from "@/integrations/supabase/types";
 import { buscaQuery, perfilQuery } from "@/lib/queries";
-import { controlarBusca, escolherCnpjCandidato, informarCnpj, processarAgora } from "@/lib/caderneta.functions";
+import { controlarBusca, escolherCnpjCandidato, informarCnpj, processarAgora, reconciliarCandidatosSalvos } from "@/lib/caderneta.functions";
 import { aplicarModelo, cnpjValido, formatarCnpj, formatarTelefone, linkWhatsApp } from "@/lib/br";
 import type { Fonte, Motivo } from "@/lib/score";
 import { BadgeConfianca, Metric, Pill, SkeletonLinhas, StatusBusca, StatusCnpj } from "@/components/app/ui-bits";
@@ -26,6 +26,8 @@ export function Resultados({ buscaId }: { buscaId: string }) {
   const qc = useQueryClient();
   const processar = useServerFn(processarAgora);
   const controlar = useServerFn(controlarBusca);
+  const reconciliar = useServerFn(reconciliarCandidatosSalvos);
+  const buscasReconciliadas = useRef(new Set<string>());
   const { data: perfil } = useQuery(perfilQuery);
   const { data, isPending, isError, refetch } = useQuery({
     ...buscaQuery(buscaId),
@@ -43,6 +45,17 @@ export function Resultados({ buscaId }: { buscaId: string }) {
     const timer = setInterval(() => setAgora(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [buscaId]);
+
+  useEffect(() => {
+    const pendentes = data?.leads.some((l) => l.cnpj_status === "varios" && !l.cnpj);
+    if (!data?.busca || !pendentes || buscasReconciliadas.current.has(buscaId)) return;
+    buscasReconciliadas.current.add(buscaId);
+    let vivo = true;
+    void reconciliar({ data: { buscaId } }).then((r) => {
+      if (vivo && r.corrigidos > 0) void qc.invalidateQueries({ queryKey: ["busca", buscaId] });
+    }).catch(() => {});
+    return () => { vivo = false; };
+  }, [buscaId, data?.busca, data?.leads, qc, reconciliar]);
 
   useEffect(() => {
     if (!ativo) return;

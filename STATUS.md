@@ -54,6 +54,7 @@
 ## Correção de candidatos e Fase E (2026-11-22)
 - Causa do caso Mordent: matriz e filial eram tratadas como candidatos independentes; quando ambas batiam nome e sinal cadastral, a decisão mantinha “vários” sem desempatar pela raiz do CNPJ e pelo telefone/endereço.
 - Candidatos repetidos pelo mesmo CNPJ são deduplicados; para matriz/filial da mesma raiz, o sinal único mais forte de telefone/endereço confirma a unidade. Empates e empresas de raízes diferentes continuam exigindo escolha.
+- Ao abrir resultados, os casos antigos salvos como “vários” também são reavaliados uma vez com os sinais já registrados; se houver vencedor, entram na fila normal de validação sem nova consulta paga à CNPJá.
 - O teste de resposta `OfficeDto` no formato da referência da CNPJá já existia e segue passando. Foi adicionado o caso matriz/filial com telefone e endereço em conflito.
 - Detalhes mostram todos os sócios com qualificação; quando há mais de um, o campo do dono é rotulado como “Sócio-administrador”.
 - Telefone principal fica separado do melhor celular: ligar usa o principal e WhatsApp usa o celular com melhor score. A confiança sem dono identificado diz “Alta/Média/Baixa · telefone da empresa”.

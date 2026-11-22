@@ -4,7 +4,7 @@ import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { cnpjValido, extrairCnpjs, nomeDonoMei, normalizarTelefone, normalizarTexto, soDigitos } from "@/lib/br";
 import { calcularScore, type Fonte } from "@/lib/score";
 import type { Database } from "@/integrations/supabase/types";
-import { decidir, ehSiteProprio, extrairCandidatosCnpja, limparNome, type CandidatoCnpja } from "@/lib/candidatos";
+import { decidir, desempatarCandidatosSalvos, ehSiteProprio, extrairCandidatosCnpja, limparNome, type Avaliacao, type CandidatoCnpja } from "@/lib/candidatos";
 import { analisarHtml, baixarPagina, urlPermitida } from "@/lib/site-fetch.server";
 import { selecionarResultadosMaps, mapsResultKey } from "@/lib/maps-results";
 import { estimarFilaCnpjaSegundos, planejarCancelamentoFila, planejarExclusaoFila } from "@/lib/fila-utils";
@@ -599,6 +599,31 @@ export async function selecionarCnpjCandidato(userId: string, leadId: string, cn
   if (error) throw new Error("Não foi possível selecionar este CNPJ.");
   await enfileirar(userId, leadId, "cnpj");
   await atualizarEstadoLead(leadId);
+}
+
+/** Reavalia candidatos já salvos sem repetir a busca paga por nome na CNPJá. */
+export async function reconciliarCandidatosSalvos(userId: string, buscaId: string) {
+  const { data: busca } = await db.from("buscas").select("id, status").eq("id", buscaId).eq("user_id", userId).maybeSingle();
+  if (!busca) throw new Error("Busca não encontrada.");
+  if (["cancelada", "erro"].includes(busca.status)) return 0;
+  const { data: leads, error } = await db.from("leads").select("id, user_id, cnpj_candidatos")
+    .eq("busca_id", buscaId).eq("user_id", userId).eq("cnpj_status", "varios").is("cnpj", null);
+  if (error) throw new Error("Não foi possível reavaliar os candidatos salvos.");
+  let corrigidos = 0;
+  for (const lead of leads ?? []) {
+    const salvos = Array.isArray(lead.cnpj_candidatos) ? lead.cnpj_candidatos as unknown as Avaliacao[] : [];
+    const escolhido = desempatarCandidatosSalvos(salvos);
+    if (!escolhido) continue;
+    const { data: atualizados, error: erroAtualizacao } = await db.from("leads").update({
+      cnpj: escolhido.cnpj, cnpj_origem: "cnpja", cnpj_fonte_url: `https://cnpja.com/office/${escolhido.cnpj}`,
+      cnpj_status: "na_fila", cnpj_motivo: `Confirmado por: ${escolhido.motivos.join(", ")}`, cnpja_buscado: true,
+    }).eq("id", lead.id).eq("cnpj_status", "varios").is("cnpj", null).select("id");
+    if (erroAtualizacao || !atualizados?.length) continue;
+    corrigidos++;
+    await enfileirar(userId, lead.id, "cnpj");
+    await atualizarEstadoLead(lead.id);
+  }
+  return corrigidos;
 }
 
 export async function controlarBusca(userId: string, buscaId: string, acao: "pausar" | "retomar") {
