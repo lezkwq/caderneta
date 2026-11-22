@@ -13,11 +13,12 @@ export function Pill({ tone = "neutro", icon, children }: { tone?: "ok" | "erro"
   return <span className={`inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-sm font-medium ${t}`}>{icon}{children}</span>;
 }
 
-export function BadgeConfianca({ score }: { score: number }) {
+export function BadgeConfianca({ score, telefoneEmpresa = false }: { score: number; telefoneEmpresa?: boolean }) {
   const f = faixaScore(score);
-  if (f === "alta") return <Pill tone="ok" icon={<ShieldCheck className="size-4 text-success" aria-hidden />}>Alta · {score}</Pill>;
-  if (f === "media") return <Pill tone="atencao" icon={<ShieldQuestion className="size-4 text-warning" aria-hidden />}>Média · {score}</Pill>;
-  return <Pill tone="erro" icon={<ShieldAlert className="size-4 text-destructive" aria-hidden />}>Baixa · {score}</Pill>;
+  const rotulo = telefoneEmpresa ? "telefone da empresa" : `${score}`;
+  if (f === "alta") return <Pill tone="ok" icon={<ShieldCheck className="size-4 text-success" aria-hidden />}>Alta · {rotulo}</Pill>;
+  if (f === "media") return <Pill tone="atencao" icon={<ShieldQuestion className="size-4 text-warning" aria-hidden />}>Média · {rotulo}</Pill>;
+  return <Pill tone="erro" icon={<ShieldAlert className="size-4 text-destructive" aria-hidden />}>Baixa · {rotulo}</Pill>;
 }
 
 const STATUS_CNPJ: Record<string, { t: string; tone: "ok" | "erro" | "atencao" | "neutro"; i: "ok" | "spin" | "warn" | "x" | "wait" }> = {

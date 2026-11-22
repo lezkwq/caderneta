@@ -484,7 +484,7 @@ async function processarCnpj(tarefa: { id: string; lead_id: string; user_id: str
       razao_social: dados.mei ? nomeDonoMei(dados.razao_social) : dados.razao_social,
       nome_fantasia: dados.nome_fantasia, situacao: dados.situacao, natureza: dados.natureza,
       municipio_receita: dados.municipio, uf_receita: dados.uf, email_receita: dados.email,
-      dono, dono_fonte: donoFonte, socios: dados.socios.filter((s) => s.nome !== dono) as unknown as Json,
+      dono, dono_fonte: donoFonte, socios: dados.socios as unknown as Json,
     }).eq("id", lead.id);
     for (const t of dados.telefones) await adicionarTelefone(lead.user_id, lead.id, t, { tipo: "receita", url: fonte });
   }

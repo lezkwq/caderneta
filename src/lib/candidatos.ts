@@ -113,11 +113,25 @@ export function avaliar(lead: LeadParaComparar, c: CandidatoCnpja): Avaliacao {
 
 /** Nunca aceita o primeiro: só confirma com telefone ou endereço batendo e sem empate. */
 export function decidir(lead: LeadParaComparar, registros: CandidatoCnpja[], cnae: string | null): Decisao {
-  const candidatos = registros.filter((r) => cnaeConfere(r, cnae)).map((r) => avaliar(lead, r)).sort((x, y) => y.pontos - x.pontos);
+  const unicos = new Map<string, CandidatoCnpja>();
+  for (const r of registros) {
+    if (!cnaeConfere(r, cnae)) continue;
+    const cnpj = soDigitos(r.taxId);
+    if (!unicos.has(cnpj)) unicos.set(cnpj, r);
+  }
+  const candidatos = [...unicos.values()].map((r) => avaliar(lead, r)).sort((x, y) => y.pontos - x.pontos);
   if (candidatos.length === 0) return { tipo: "nenhum", candidatos };
   const fortes = candidatos.filter((c) => c.bateNome && (c.bateTelefone || c.bateEndereco));
   if (fortes.length === 1) return { tipo: "confirmado", escolhido: fortes[0] as Avaliacao, candidatos };
-  if (fortes.length > 1) return { tipo: "varios", candidatos };
+  if (fortes.length > 1) {
+    const raizes = new Set(fortes.map((c) => c.cnpj.slice(0, 8)));
+    if (raizes.size === 1) {
+      const melhorPontuacao = Math.max(...fortes.map((c) => c.pontos));
+      const melhores = fortes.filter((c) => c.pontos === melhorPontuacao);
+      if (melhores.length === 1) return { tipo: "confirmado", escolhido: melhores[0] as Avaliacao, candidatos };
+    }
+    return { tipo: "varios", candidatos };
+  }
   if (candidatos.length === 1) return { tipo: "provavel", escolhido: candidatos[0] as Avaliacao, candidatos };
   return { tipo: "varios", candidatos };
 }

@@ -50,3 +50,13 @@
 - O worker cancela tarefas órfãs e de buscas canceladas antes de processá-las; a previsão exclui tarefas órfãs, canceladas e pausadas.
 - A tela de resultados separa itens CNPJá desta busca e de outras buscas do usuário, com link para o histórico. A estimativa usa a fila CNPJá global e até três chamadas de API por tarefa no limite de 10 por minuto.
 - Sem alteração de esquema, migration ou RLS. `bun run build`, `bun test` (31 testes) e `bun x tsc --noEmit` passaram.
+
+## Correção de candidatos e Fase E (2026-11-22)
+- Causa do caso Mordent: matriz e filial eram tratadas como candidatos independentes; quando ambas batiam nome e sinal cadastral, a decisão mantinha “vários” sem desempatar pela raiz do CNPJ e pelo telefone/endereço.
+- Candidatos repetidos pelo mesmo CNPJ são deduplicados; para matriz/filial da mesma raiz, o sinal único mais forte de telefone/endereço confirma a unidade. Empates e empresas de raízes diferentes continuam exigindo escolha.
+- O teste de resposta `OfficeDto` no formato da referência da CNPJá já existia e segue passando. Foi adicionado o caso matriz/filial com telefone e endereço em conflito.
+- Detalhes mostram todos os sócios com qualificação; quando há mais de um, o campo do dono é rotulado como “Sócio-administrador”.
+- Telefone principal fica separado do melhor celular: ligar usa o principal e WhatsApp usa o celular com melhor score. A confiança sem dono identificado diz “Alta/Média/Baixa · telefone da empresa”.
+- `/new` oferece o filtro opcional de empresas sem site próprio e informa a coleta extra; Instagram, Facebook, Linktree e WhatsApp contam como sem site. A lista ganhou filtro “Sem site / só rede social”. O filtro do servidor continua aplicado antes de criar a fila CNPJá.
+- Busca concluída, cancelada e com erro agora mostram mensagens finais próprias; “Etapa” continua alinhada junto do selo de status.
+- Sem alteração de esquema, migration, RLS ou dependências. `bun run build`, `bun test` (33 testes) e `bun x tsc --noEmit` passaram.

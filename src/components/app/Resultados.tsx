@@ -58,7 +58,7 @@ export function Resultados({ buscaId }: { buscaId: string }) {
     return () => { vivo = false; clearInterval(t); };
   }, [ativo, buscaId, processar, qc]);
 
-  const [filtros, setFiltros] = useState({ dono: false, celular: false, contatados: false });
+  const [filtros, setFiltros] = useState({ dono: false, celular: false, contatados: false, semSite: false });
   const [aberto, setAberto] = useState<string | null>(null);
   const [wa, setWa] = useState<{ lead: Lead; tel: Tel } | null>(null);
 
@@ -74,6 +74,7 @@ export function Resultados({ buscaId }: { buscaId: string }) {
     if (filtros.dono && !l.dono) return false;
     if (filtros.celular && !tels.some((t) => t.tipo === "celular")) return false;
     if (filtros.contatados && !l.contatado) return false;
+    if (filtros.semSite && l.site_proprio) return false;
     return true;
   }), [data?.leads, filtros, telsPorLead]);
 
@@ -149,7 +150,7 @@ export function Resultados({ buscaId }: { buscaId: string }) {
           <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${b.status === "concluida" ? 100 : pct}%` }} />
         </div>
         <p className="mt-2 text-sm text-muted-foreground">
-          {b.status === "buscando" ? "Buscando empresas no Google Maps." : emAndamento ? `${emAndamento.cnpj ? "Consultando dados de" : "Buscando CNPJ de"} ${emAndamento.nome}, ${posicao} de ${alvo}.` : b.status === "pausada" ? "O processamento está pausado e pode ser retomado." : b.status === "importando" ? "Deduplicando resultados e aplicando filtros." : "Aguardando a próxima empresa da fila."}
+          {b.status === "concluida" ? "Busca concluída." : b.status === "cancelada" ? "Busca cancelada." : b.status === "erro" ? "Busca finalizada com erro." : b.status === "buscando" ? "Buscando empresas no Google Maps." : emAndamento ? `${emAndamento.cnpj ? "Consultando dados de" : "Buscando CNPJ de"} ${emAndamento.nome}, ${posicao} de ${alvo}.` : b.status === "pausada" ? "O processamento está pausado e pode ser retomado." : b.status === "importando" ? "Deduplicando resultados e aplicando filtros." : "Aguardando a próxima empresa da fila."}
           {metricas && <> Coletadas {metricas.coletadas}, únicas {metricas.unicas}, mantidas {metricas.mantidas}.</>}
           {!['pausada', 'concluida', 'cancelada', 'erro'].includes(b.status) && <> Tempo estimado restante: {tempoRestante}.</>}
         </p>
@@ -169,7 +170,7 @@ export function Resultados({ buscaId }: { buscaId: string }) {
 
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div className="flex flex-wrap gap-2" role="group" aria-label="Filtros">
-          {([["dono", "Com dono"], ["celular", "Com celular"], ["contatados", "Contatados"]] as const).map(([k, t]) => (
+          {([["dono", "Com dono"], ["celular", "Com celular"], ["contatados", "Contatados"], ["semSite", "Sem site / só rede social"]] as const).map(([k, t]) => (
             <button key={k} aria-pressed={filtros[k]} onClick={() => setFiltros({ ...filtros, [k]: !filtros[k] })}
               className={`h-11 rounded-full border px-4 text-sm font-medium transition-colors ${filtros[k] ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card hover:bg-secondary"}`}>
               {filtros[k] ? "✓ " : ""}{t}
@@ -200,19 +201,30 @@ interface ListaProps {
   marcar: (l: Lead, v: boolean) => void; excluir: (l: Lead) => void; abrirWa: (l: Lead, t: Tel) => void; buscaId: string;
 }
 
-function Acoes({ lead, tel, abrirWa }: { lead: Lead; tel: Tel | undefined; abrirWa: (l: Lead, t: Tel) => void }) {
-  if (!tel) return <span className="text-sm text-muted-foreground">Sem telefone</span>;
+function Acoes({ lead, tel, melhorCelular, abrirWa }: { lead: Lead; tel: Tel | undefined; melhorCelular?: Tel | undefined; abrirWa: (l: Lead, t: Tel) => void }) {
+  const celular = melhorCelular ?? (tel?.tipo === "celular" ? tel : undefined);
+  if (!tel && !celular) return <span className="text-sm text-muted-foreground">Sem telefone</span>;
   return (
     <div className="flex flex-wrap gap-2">
-      {tel.tipo === "celular" && <Button size="sm" onClick={() => abrirWa(lead, tel)}><MessageCircle aria-hidden />WhatsApp provável</Button>}
-      <Button size="sm" variant="outline" asChild><a href={`tel:${tel.numero}`}><Phone aria-hidden />Ligar</a></Button>
+      {celular?.tipo === "celular" && <Button size="sm" onClick={() => abrirWa(lead, celular)}><MessageCircle aria-hidden />WhatsApp</Button>}
+      {tel && <Button size="sm" variant="outline" asChild><a href={`tel:${tel.numero}`}><Phone aria-hidden />Ligar</a></Button>}
     </div>
   );
 }
 
 function Dono({ l }: { l: Lead }) {
-  if (l.dono) return <span className="font-medium text-heading">{l.dono}</span>;
-  return <span className="text-sm text-muted-foreground">Dono: não disponível</span>;
+  const socios = sociosDoLead(l);
+  const rotulo = socios.length > 1 ? "Sócio-administrador" : "Dono";
+  if (l.dono) return <span className="font-medium text-heading"><span className="text-sm font-normal text-muted-foreground">{rotulo}:</span> {l.dono}</span>;
+  return <span className="text-sm text-muted-foreground">{rotulo}: não disponível</span>;
+}
+
+function sociosDoLead(l: Lead): { nome: string; qualificacao: string }[] {
+  const socios = (l.socios as { nome: string; qualificacao: string }[] | null) ?? [];
+  const prefixo = "Quadro societário: ";
+  const qualificacao = l.dono_fonte?.startsWith(prefixo) ? l.dono_fonte.slice(prefixo.length) : "";
+  if (l.dono && qualificacao && !socios.some((s) => s.nome.trim() === l.dono?.trim())) return [...socios, { nome: l.dono, qualificacao }];
+  return socios;
 }
 
 function EtapaLead({ lead }: { lead: Lead }) {
@@ -234,16 +246,17 @@ function TabelaLeads(p: ListaProps) {
         <tbody>
           {p.leads.map((l) => {
             const ts = p.telsPorLead.get(l.id) ?? [];
-            const tel = ts[0];
+            const tel = ts.find((t) => t.principal) ?? ts[0];
+            const melhorCelular = ts.filter((t) => t.tipo === "celular").sort((a, b) => b.score - a.score)[0];
             const open = p.aberto === l.id;
             return (
               <Fragment key={l.id}>
                 <tr className={`border-t border-border align-top ${l.contatado ? "bg-success-soft/40" : ""}`}>
                   <td className="px-4 py-3"><div className="font-medium text-heading">{l.nome}</div><div className="text-sm text-muted-foreground">{[l.categoria, l.cidade].filter(Boolean).join(" · ")}</div></td>
                   <td className="px-4 py-3"><Dono l={l} /></td>
-                  <td className="px-4 py-3">{tel ? <div className="space-y-1"><div className="font-medium text-heading">{formatarTelefone(tel.numero)} <span className="text-sm font-normal text-muted-foreground">{tel.tipo}</span></div><BadgeConfianca score={tel.score} /></div> : <span className="text-sm text-muted-foreground">—</span>}</td>
+                  <td className="px-4 py-3">{tel ? <div className="space-y-1"><div className="font-medium text-heading">{formatarTelefone(tel.numero)} <span className="text-sm font-normal text-muted-foreground">{tel.tipo} · principal</span></div><BadgeConfianca score={tel.score} telefoneEmpresa={!l.dono} /></div> : <span className="text-sm text-muted-foreground">—</span>}</td>
                   <td className="px-4 py-3"><div className="flex flex-wrap items-center gap-x-2 gap-y-1"><StatusCnpj status={l.cnpj_status} /><EtapaLead lead={l} /></div></td>
-                  <td className="px-4 py-3"><Acoes lead={l} tel={tel} abrirWa={p.abrirWa} /></td>
+                  <td className="px-4 py-3"><Acoes lead={l} tel={tel} melhorCelular={melhorCelular} abrirWa={p.abrirWa} /></td>
                   <td className="px-2 py-3 text-right">
                     <button aria-expanded={open} aria-label={open ? "Recolher detalhes" : "Ver detalhes"} onClick={() => p.setAberto(open ? null : l.id)} className="grid size-11 place-items-center rounded-full hover:bg-secondary"><ChevronDown className={`size-5 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden /></button>
                   </td>
@@ -263,7 +276,8 @@ function CardsLeads(p: ListaProps) {
     <ul className="space-y-3 md:hidden">
       {p.leads.map((l) => {
         const ts = p.telsPorLead.get(l.id) ?? [];
-        const tel = ts[0];
+        const tel = ts.find((t) => t.principal) ?? ts[0];
+        const melhorCelular = ts.filter((t) => t.tipo === "celular").sort((a, b) => b.score - a.score)[0];
         const open = p.aberto === l.id;
         return (
           <li key={l.id} className="card-soft p-4">
@@ -273,12 +287,12 @@ function CardsLeads(p: ListaProps) {
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2">
               {tel && <span className="font-medium text-heading">{formatarTelefone(tel.numero)}</span>}
-              {tel && <BadgeConfianca score={tel.score} />}
+              {tel && <BadgeConfianca score={tel.score} telefoneEmpresa={!l.dono} />}
               <StatusCnpj status={l.cnpj_status} />
               <EtapaLead lead={l} />
               {l.contatado && <Pill tone="ok" icon={<CheckCheck className="size-4 text-success" aria-hidden />}>Contatado</Pill>}
             </div>
-            <div className="mt-3 [&_a]:flex-1 [&_button]:flex-1"><Acoes lead={l} tel={tel} abrirWa={p.abrirWa} /></div>
+            <div className="mt-3 [&_a]:flex-1 [&_button]:flex-1"><Acoes lead={l} tel={tel} melhorCelular={melhorCelular} abrirWa={p.abrirWa} /></div>
             {open && <div className="mt-4 border-t border-border pt-4"><Detalhes lead={l} tels={ts} {...p} /></div>}
           </li>
         );
@@ -292,7 +306,7 @@ function Detalhes({ lead: l, tels, marcar, excluir, abrirWa, buscaId }: ListaPro
   const escolher = useServerFn(escolherCnpjCandidato);
   const [selecionando, setSelecionando] = useState<string | null>(null);
   const links = (l.links as { tipo: string; url: string }[]) ?? [];
-  const socios = (l.socios as { nome: string; qualificacao: string }[]) ?? [];
+  const socios = sociosDoLead(l);
   const candidatos = (l.cnpj_candidatos as unknown as { cnpj: string; nome: string; endereco: string; telefones: string[]; pontos: number; motivos: string[] }[]) ?? [];
   const telefonesFonteMaps = tels.filter((t) => ((t.fontes as unknown as Fonte[]) ?? []).some((f) => ["maps", "site", "whatsapp_site"].includes(f.tipo)));
 
@@ -316,7 +330,7 @@ function Detalhes({ lead: l, tels, marcar, excluir, abrirWa, buscaId }: ListaPro
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-medium text-heading">{formatarTelefone(t.numero)}</span>
               <span className="text-sm">{t.tipo}{i === 0 ? " · principal" : ""}</span>
-              <BadgeConfianca score={t.score} />
+              <BadgeConfianca score={t.score} telefoneEmpresa={!l.dono} />
             </div>
             <ul className="mt-2 space-y-0.5 text-sm">
               {((t.motivos as unknown as Motivo[]) ?? []).map((m, j) => <li key={j}><span className={m.pontos >= 0 ? "text-success-text" : "text-danger-text"}>{m.pontos >= 0 ? "+" : "−"}{Math.abs(m.pontos)}</span> {m.texto}</li>)}
@@ -361,8 +375,8 @@ function Detalhes({ lead: l, tels, marcar, excluir, abrirWa, buscaId }: ListaPro
               <dt className="text-muted-foreground">Situação</dt><dd>{l.situacao}</dd>
               <dt className="text-muted-foreground">Natureza</dt><dd>{l.natureza}</dd>
               <dt className="text-muted-foreground">Local</dt><dd>{l.municipio_receita}/{l.uf_receita}</dd>
-              {l.dono_fonte && <><dt className="text-muted-foreground">Dono</dt><dd>{l.dono ?? "não disponível"} — {l.dono_fonte}</dd></>}
-              {socios.length > 0 && <><dt className="text-muted-foreground">Outros sócios</dt><dd>{socios.map((s) => `${s.nome} (${s.qualificacao})`).join("; ")}</dd></>}
+              {l.dono_fonte && <><dt className="text-muted-foreground">{socios.length > 1 ? "Sócio-administrador" : "Dono"}</dt><dd>{l.dono ?? "não disponível"} — {l.dono_fonte}</dd></>}
+              {socios.length > 0 && <><dt className="text-muted-foreground">Todos os sócios</dt><dd>{socios.map((s) => `${s.nome} (${s.qualificacao || "qualificação não informada"})`).join("; ")}</dd></>}
             </dl>
           )}
           {l.cnpj_status !== "validado" && !["na_fila", "consultando"].includes(l.cnpj_status) && <CnpjManual leadId={l.id} buscaId={buscaId} />}

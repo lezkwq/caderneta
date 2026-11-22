@@ -36,7 +36,7 @@ function NovaBusca() {
   const info = useServerFn(infoSistema);
   const iniciar = useServerFn(iniciarBusca);
   const { data: sis } = useQuery({ queryKey: ["sistema"], queryFn: () => info() });
-  const [f, setF] = useState({ cidade: "", estado: "SC", pais: "Brasil", nicho: "", quantidade: "20" });
+  const [f, setF] = useState({ cidade: "", estado: "SC", pais: "Brasil", nicho: "", quantidade: "20", soSemSite: false });
   const [erros, setErros] = useState<Record<string, string>>({});
   const [geral, setGeral] = useState("");
   const [loading, setLoading] = useState(false);
@@ -58,7 +58,7 @@ function NovaBusca() {
     if (Object.keys(er).length) return;
     setLoading(true);
     try {
-      const r = await iniciar({ data: { cidade: f.cidade.trim(), estado: f.estado.trim(), pais: f.pais.trim(), nicho: f.nicho.trim(), quantidade: n } });
+      const r = await iniciar({ data: { cidade: f.cidade.trim(), estado: f.estado.trim(), pais: f.pais.trim(), nicho: f.nicho.trim(), quantidade: n, soSemSite: f.soSemSite } });
       if (r.erro || !r.id) { setGeral(r.erro ?? "Não foi possível iniciar."); return; }
       await qc.invalidateQueries({ queryKey: ["buscas"] });
       nav({ to: "/busca/$id", params: { id: r.id } });
@@ -66,7 +66,7 @@ function NovaBusca() {
     finally { setLoading(false); }
   }
 
-  const campo = (k: keyof typeof f, label: string, props: React.ComponentProps<typeof Input> = {}, hint?: string) => (
+  const campo = (k: "cidade" | "estado" | "pais" | "nicho" | "quantidade", label: string, props: React.ComponentProps<typeof Input> = {}, hint?: string) => (
     <Field id={k} label={label} error={erros[k]} {...(hint ? { hint } : {})}>
       <Input id={k} aria-invalid={!!erros[k]} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })} {...props} />
     </Field>
@@ -82,6 +82,13 @@ function NovaBusca() {
           <div className="xl:col-span-2">{campo("quantidade", "Quantidade de empresas", { type: "number", min: 1, max: 100, inputMode: "numeric" }, "Máximo 100.")}</div>
           <div className="xl:col-span-3">{campo("estado", "Estado")}</div>
           <div className="xl:col-span-3">{campo("pais", "País")}</div>
+        </div>
+        <div className="mt-4 space-y-1">
+          <label className="flex min-h-11 cursor-pointer items-center gap-3 text-sm font-medium text-heading">
+            <input type="checkbox" className="size-5 accent-[var(--color-primary)]" checked={f.soSemSite} onChange={(e) => setF({ ...f, soSemSite: e.target.checked })} />
+            Só empresas sem site próprio
+          </label>
+          {f.soSemSite && <p className="pl-8 text-sm text-muted-foreground">Instagram, Facebook, Linktree e links de WhatsApp contam como sem site. Vamos coletar até {Math.min(300, qtd * 3)} resultados para compensar os filtros e manter no máximo {qtd} empresas.</p>}
         </div>
         <div className="mt-6 flex flex-col gap-4 border-t border-border pt-5 md:flex-row md:items-center md:justify-between">
           <p className="flex items-start gap-2 text-sm"><Clock className="mt-0.5 size-4 shrink-0" aria-hidden />

@@ -10,6 +10,7 @@ export const iniciarBusca = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => z.object({
     cidade: texto(80), estado: texto(40), pais: texto(40), nicho: texto(80),
     quantidade: z.number().int().min(1).max(100),
+    soSemSite: z.boolean().optional(),
   }).parse(d))
   .handler(async ({ data, context }) => {
     const s = await import("@/lib/caderneta.server");

@@ -17,6 +17,19 @@ describe("Decisão do candidato (casos reais)", () => {
     if (r.tipo === "confirmado") expect(r.escolhido.cnpj).toBe("10898932000157");
   });
 
+  it("desempata matriz e filial da mesma raiz pelo telefone do Maps", () => {
+    const r = decidir(
+      { nome: "Mordent Odontologia", cep: "88000000", logradouro: "Rua das Flores", endereco: "123", telefones: ["+554733381916"] },
+      [
+        { taxId: "12345678000190", alias: "Mordent", company: { name: "MORDENT CLINICA ODONTOLOGICA LTDA" }, address: { street: "Rua da Matriz", number: "10", zip: "88000111" }, phones: [{ area: "47", number: "33381916" }], mainActivity: { id: 8630504 } },
+        { taxId: "12345678000270", alias: "Mordent", company: { name: "MORDENT CLINICA ODONTOLOGICA LTDA" }, address: { street: "Rua das Flores", number: "123", zip: "88000000" }, phones: [{ area: "47", number: "33380000" }], mainActivity: { id: 8630504 } },
+      ],
+      "8630504",
+    );
+    expect(r.tipo).toBe("confirmado");
+    if (r.tipo === "confirmado") expect(r.escolhido.cnpj).toBe("12345678000190");
+  });
+
   it("(b) Cia do Sorriso com telefone do cadastro diferente: provável, confirmar", () => {
     const r = decidir(
       { nome: "Cia do Sorriso", telefones: ["+5547999990000"] },
@@ -84,5 +97,10 @@ describe("Decisão do candidato (casos reais)", () => {
 describe("Site próprio", () => {
   it("Instagram não é site próprio", () => expect(ehSiteProprio("https://instagram.com/x")).toBe(false));
   it("Linktree não é site próprio", () => expect(ehSiteProprio("https://linktr.ee/x")).toBe(false));
+  it("Facebook e links de WhatsApp não são site próprio", () => {
+    expect(ehSiteProprio("https://m.facebook.com/x")).toBe(false);
+    expect(ehSiteProprio("https://wa.me/5547999999999")).toBe(false);
+    expect(ehSiteProprio("https://api.whatsapp.com/send?phone=5547999999999")).toBe(false);
+  });
   it("domínio da empresa é site próprio", () => expect(ehSiteProprio("https://mordent.com.br")).toBe(true));
 });
