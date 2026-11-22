@@ -9,9 +9,11 @@ import type { Database } from "@/integrations/supabase/types";
 import { buscaQuery, perfilQuery } from "@/lib/queries";
 import { controlarBusca, escolherCnpjCandidato, informarCnpj, processarAgora, reconciliarCandidatosSalvos } from "@/lib/caderneta.functions";
 import { aplicarModelo, cnpjValido, formatarCnpj, formatarTelefone, linkWhatsApp } from "@/lib/br";
+import { responsavelProvavelMaps } from "@/lib/candidatos";
 import type { Fonte, Motivo } from "@/lib/score";
 import { BadgeConfianca, Metric, Pill, SkeletonLinhas, StatusBusca, StatusCnpj } from "@/components/app/ui-bits";
 import { Field } from "@/components/app/Field";
+import { acumularMetricasRodadaMaps, type MetricasRodadasMaps } from "@/lib/maps-results";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -19,6 +21,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 
 type Lead = Database["public"]["Tables"]["leads"]["Row"];
 type Tel = Database["public"]["Tables"]["telefones"]["Row"];
+type MetricasMaps = MetricasRodadasMaps;
 
 const NOME_FONTE: Record<string, string> = { maps: "Google Maps", site: "Site", whatsapp_site: "WhatsApp no site", receita: "Receita (CNPJ)", manual: "Informado" };
 
@@ -35,7 +38,7 @@ export function Resultados({ buscaId }: { buscaId: string }) {
   });
   const ativo = !!data?.busca && !["concluida", "erro", "pausada", "cancelada"].includes(data.busca.status);
   const [fila, setFila] = useState<{ cnpjNaFila: number; cnpjaNaFila: number; cnpjaDestaBusca: number; cnpjaOutrasBuscas: number; tempoEstimadoSegundos: number; bloqueadoAte: string | null; bloqueadoCnpjaAte: string | null; cnpjaSaldoBaixo: boolean } | null>(null);
-  const [metricas, setMetricas] = useState<{ coletadas: number; unicas: number; mantidas: number } | null>(null);
+  const [metricas, setMetricas] = useState<MetricasMaps | null>(null);
   const [controlando, setControlando] = useState(false);
   const [agora, setAgora] = useState(Date.now());
 
@@ -63,7 +66,11 @@ export function Resultados({ buscaId }: { buscaId: string }) {
     const rodar = () => processar({ data: { buscaId } }).then((r) => { if (vivo) {
       setFila(r);
       const info = r.importacoes?.find((x) => x.buscaId === buscaId);
-      if (info) { const m = { coletadas: info.coletadas, unicas: info.unicas, mantidas: info.mantidas }; setMetricas(m); localStorage.setItem(`caderneta-mapas-${buscaId}`, JSON.stringify(m)); }
+      if (info) setMetricas((anterior) => {
+        const m = acumularMetricasRodadaMaps(anterior, { ...info });
+        localStorage.setItem(`caderneta-mapas-${buscaId}`, JSON.stringify(m));
+        return m;
+      });
       void qc.invalidateQueries({ queryKey: ["busca", buscaId] });
     } }).catch(() => {});
     rodar();
@@ -164,7 +171,9 @@ export function Resultados({ buscaId }: { buscaId: string }) {
         </div>
         <p className="mt-2 text-sm text-muted-foreground">
           {b.status === "concluida" ? "Busca concluída." : b.status === "cancelada" ? "Busca cancelada." : b.status === "erro" ? "Busca finalizada com erro." : b.status === "buscando" ? "Buscando empresas no Google Maps." : emAndamento ? `${emAndamento.cnpj ? "Consultando dados de" : "Buscando CNPJ de"} ${emAndamento.nome}, ${posicao} de ${alvo}.` : b.status === "pausada" ? "O processamento está pausado e pode ser retomado." : b.status === "importando" ? "Deduplicando resultados e aplicando filtros." : "Aguardando a próxima empresa da fila."}
-          {metricas && <> Coletadas {metricas.coletadas}, únicas {metricas.unicas}, mantidas {metricas.mantidas}.</>}
+          {metricas && (metricas.parcial
+            ? <> Coletadas {metricas.coletadas}, mantidas {metricas.mantidas} de {metricas.quantidade ?? alvo} pedidas.</>
+            : <> Coletadas {metricas.coletadas}, únicas {metricas.unicas}, mantidas {metricas.mantidas}.</>)}
           {!['pausada', 'concluida', 'cancelada', 'erro'].includes(b.status) && <> Tempo estimado restante: {tempoRestante}.</>}
         </p>
         {fila && <p className="mt-2 text-sm text-muted-foreground">
@@ -229,6 +238,8 @@ function Dono({ l }: { l: Lead }) {
   const socios = sociosDoLead(l);
   const rotulo = socios.length > 1 ? "Sócio-administrador" : "Dono";
   if (l.dono) return <span className="font-medium text-heading"><span className="text-sm font-normal text-muted-foreground">{rotulo}:</span> {l.dono}</span>;
+  const nomeMaps = responsavelProvavelMaps(l.nome);
+  if (nomeMaps) return <span className="text-sm text-muted-foreground">Nome no Maps: {nomeMaps}</span>;
   return <span className="text-sm text-muted-foreground">{rotulo}: não disponível</span>;
 }
 

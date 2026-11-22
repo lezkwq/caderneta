@@ -43,3 +43,37 @@ export function selecionarResultadosMaps<T extends ResultadoMapaBase>(
   const itensFinais = unicos.filter((item) => !excluir(item)).slice(0, Math.max(0, quantidade));
   return { coletadas: itens.length, unicas: unicos.length, mantidas: itensFinais.length, itens: itensFinais };
 }
+
+/** Aumenta o teto em uma quantidade pedida por rodada, até cinco vezes o alvo. */
+export function planejarProximaRodadaMaps(args: {
+  quantidade: number;
+  limiteAtual: number;
+  coletadasNaRodada: number;
+  mantidas: number;
+}): number | null {
+  const quantidade = Math.max(0, Math.floor(args.quantidade));
+  const teto = quantidade * 5;
+  if (!quantidade || args.mantidas >= quantidade || args.coletadasNaRodada < args.limiteAtual || args.limiteAtual >= teto) return null;
+  return Math.min(teto, args.limiteAtual + quantidade);
+}
+
+export type MetricasRodadasMaps = { coletadas: number; unicas: number; mantidas: number; quantidade?: number; parcial?: boolean; rodadas?: string[] };
+
+/** Acumula o que foi coletado em cada rodada sem duplicar respostas repetidas do worker. */
+export function acumularMetricasRodadaMaps(
+  anterior: MetricasRodadasMaps | null,
+  rodada: MetricasRodadasMaps & { rodadaId?: string | null },
+): MetricasRodadasMaps {
+  const id = rodada.rodadaId;
+  if (id && anterior?.rodadas?.includes(id)) return anterior;
+  const acumuladas: MetricasRodadasMaps = {
+    coletadas: (anterior?.coletadas ?? 0) + rodada.coletadas,
+    unicas: (anterior?.unicas ?? 0) + rodada.unicas,
+    mantidas: rodada.mantidas,
+  };
+  if (rodada.quantidade !== undefined) acumuladas.quantidade = rodada.quantidade;
+  if (rodada.parcial !== undefined) acumuladas.parcial = rodada.parcial;
+  if (id) acumuladas.rodadas = [...(anterior?.rodadas ?? []), id];
+  else if (anterior?.rodadas) acumuladas.rodadas = anterior.rodadas;
+  return acumuladas;
+}

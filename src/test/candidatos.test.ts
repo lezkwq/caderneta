@@ -1,9 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { decidir, desempatarCandidatosSalvos, ehSiteProprio, extrairCandidatosCnpja, limparNome } from "@/lib/candidatos";
+import { decidir, desempatarCandidatosSalvos, ehSiteProprio, extrairCandidatosCnpja, limparNome, limparNomeParaBuscaCnpja, responsavelProvavelMaps } from "@/lib/candidatos";
 
 describe("Limpeza do nome", () => {
   it("Odontologia Premier - Dentista em Blumenau vira premier", () => expect(limparNome("Odontologia Premier - Dentista em Blumenau", "Blumenau")).toBe("premier"));
   it("tira termos genéricos e acentos", () => expect(limparNome("Clínica Odontológica Mordent Ltda")).toBe("mordent"));
+  it("extrai o responsável provável sem usar o nome pessoal na consulta ou pontuação CNPJ", () => {
+    expect(responsavelProvavelMaps("Dr. João da Silva - Mordent Odontologia")).toBe("João da Silva");
+    expect(responsavelProvavelMaps("Dra. Ana Paula de Souza | Clínica Mordent")).toBe("Ana Paula de Souza");
+    expect(responsavelProvavelMaps("Dr(a). Maria Oliveira Odontologia")).toBe("Maria Oliveira");
+    expect(limparNomeParaBuscaCnpja("Dr. João da Silva - Mordent Odontologia")).toBe("mordent");
+    const decisao = decidir(
+      { nome: "Dr. João da Silva - Mordent Odontologia", telefones: [] },
+      [{ taxId: "12345678000190", company: { name: "JOAO DA SILVA ODONTOLOGIA LTDA" } }],
+      null,
+    );
+    expect(decisao.candidatos[0]?.bateNome).toBe(false);
+  });
 });
 
 describe("Decisão do candidato (casos reais)", () => {

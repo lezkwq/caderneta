@@ -61,3 +61,10 @@
 - `/new` oferece o filtro opcional de empresas sem site próprio e informa a coleta extra; Instagram, Facebook, Linktree e WhatsApp contam como sem site. A lista ganhou filtro “Sem site / só rede social”. O filtro do servidor continua aplicado antes de criar a fila CNPJá.
 - Busca concluída, cancelada e com erro agora mostram mensagens finais próprias; “Etapa” continua alinhada junto do selo de status.
 - Sem alteração de esquema, migration, RLS ou dependências. `bun run build`, `bun test` (33 testes) e `bun x tsc --noEmit` passaram.
+
+## Rodadas sem site e nome provável no Maps (2026-11-22)
+- Buscas “sem site próprio” começam com o limite pedido; quando a rodada esgota esse limite sem completar a meta, a próxima aumenta em uma quantidade pedida, até 5×. Cada rodada deduplica e aplica o filtro antes de criar leads ou tarefas CNPJá.
+- Ao parar abaixo da meta, a tela mostra “Coletadas X, mantidas Y de Z pedidas.”; a informação acompanha as métricas locais da busca.
+- Nomes iniciados por Dr., Dra. ou Dr(a). exibem “Nome no Maps: ...” em cinza quando ainda não há dono validado. O valor é derivado do nome do Maps, não é gravado como dono e é removido dos termos de busca e pontuação CNPJá.
+- A tela acumula os resultados das rodadas pelo ID do run, sem contar uma resposta repetida duas vezes; ao parar abaixo da meta, mostra “Coletadas X, mantidas Y de Z pedidas.”
+- `bun run build`, `bun x tsc --noEmit` e `bun test` (36 testes) passaram nesta revisão.

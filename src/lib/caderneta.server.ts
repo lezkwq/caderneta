@@ -4,9 +4,9 @@ import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { cnpjValido, extrairCnpjs, nomeDonoMei, normalizarTelefone, normalizarTexto, soDigitos } from "@/lib/br";
 import { calcularScore, type Fonte } from "@/lib/score";
 import type { Database } from "@/integrations/supabase/types";
-import { decidir, desempatarCandidatosSalvos, ehSiteProprio, extrairCandidatosCnpja, limparNome, type Avaliacao, type CandidatoCnpja } from "@/lib/candidatos";
+import { decidir, desempatarCandidatosSalvos, ehSiteProprio, extrairCandidatosCnpja, limparNomeParaBuscaCnpja, type Avaliacao, type CandidatoCnpja } from "@/lib/candidatos";
 import { analisarHtml, baixarPagina, urlPermitida } from "@/lib/site-fetch.server";
-import { selecionarResultadosMaps, mapsResultKey } from "@/lib/maps-results";
+import { planejarProximaRodadaMaps, selecionarResultadosMaps, mapsResultKey } from "@/lib/maps-results";
 import { estimarFilaCnpjaSegundos, planejarCancelamentoFila, planejarExclusaoFila } from "@/lib/fila-utils";
 
 const db = supabaseAdmin;
@@ -183,7 +183,7 @@ async function atualizarEstadoBusca(buscaId: string) {
 
 // ───────────── Etapa 1: acompanhar runs do Apify ─────────────
 async function acompanharRuns() {
-  const importacoes: { buscaId: string; coletadas: number; unicas: number; mantidas: number }[] = [];
+  const importacoes: { buscaId: string; coletadas: number; unicas: number; mantidas: number; quantidade: number; parcial: boolean; rodadaId: string | null }[] = [];
   const { data: buscas } = await db.from("buscas").select("*").eq("status", "buscando").not("apify_run_id", "is", null).order("updated_at").limit(3);
   for (const b of buscas ?? []) {
     try {
@@ -198,19 +198,66 @@ async function acompanharRuns() {
       }
       const { data: importando } = await db.from("buscas").update({ status: "importando" }).eq("id", b.id).eq("status", "buscando").select("id").maybeSingle();
       if (!importando) continue;
-      const lim = Math.min(300, (b.quantidade ?? 20) * (b.so_sem_site ? 3 : 1));
+      const quantidade = b.quantidade ?? 20;
+      const lim = b.tipo === "maps" && b.so_sem_site ? quantidade * 5 : quantidade;
       const ri = await fetch(`${APIFY}/datasets/${encodeURIComponent(b.apify_dataset_id as string)}/items?clean=true&limit=${lim}`, { headers: apifyHeaders() });
       if (!ri.ok) throw new Error("Falha ao baixar os resultados do Maps.");
       const itens = (await ri.json()) as ItemMaps[];
       const resultado = b.tipo === "maps" ? await importarItensMaps(b, itens) : (await mesclarItensManual(b, itens), null);
+      if (b.tipo === "maps" && b.so_sem_site && resultado) {
+        const limiteAtual = await limiteRodadaApify(b.apify_run_id as string);
+        const proximoLimite = limiteAtual === null ? null : planejarProximaRodadaMaps({
+          quantidade, limiteAtual, coletadasNaRodada: itens.length, mantidas: resultado.mantidas,
+        });
+        if (proximoLimite) {
+          const { data: buscaAtual } = await db.from("buscas").select("id, status").eq("id", b.id).maybeSingle();
+          let iniciouProximaRodada = false;
+          if (buscaAtual?.status === "importando") {
+            try {
+              const cfg = await lerConfig();
+              const run = await iniciarRunApify(cfg.mapsActor, entradaBuscaMaps({
+                nicho: b.nicho ?? "", cidade: b.cidade ?? "", estado: b.estado ?? "", pais: b.pais ?? "", limite: proximoLimite,
+              }), cfg.maxChargeUsd);
+              const { data: atualizada } = await db.from("buscas").update({ status: "buscando", apify_run_id: run.runId, apify_dataset_id: run.datasetId, erro: null })
+                .eq("id", b.id).eq("status", "importando").select("id").maybeSingle();
+              if (atualizada) iniciouProximaRodada = true;
+              else {
+                await fetch(`${APIFY}/actor-runs/${encodeURIComponent(run.runId)}/abort`, { method: "POST", headers: apifyHeaders() }).catch(() => {});
+              }
+            } catch {
+              await db.from("buscas").update({ status: "processando", erro: "Não foi possível iniciar outra rodada do Maps; os leads já coletados foram preservados." }).eq("id", b.id).eq("status", "importando");
+              await atualizarEstadoBusca(b.id);
+            }
+          }
+          importacoes.push({ buscaId: b.id, ...resultado, quantidade, parcial: !iniciouProximaRodada && resultado.mantidas < quantidade, rodadaId: b.apify_run_id });
+          continue;
+        }
+      }
       await db.from("buscas").update({ status: "processando" }).eq("id", b.id).eq("status", "importando");
       await atualizarEstadoBusca(b.id);
-      if (resultado) importacoes.push({ buscaId: b.id, ...resultado });
+      if (resultado) importacoes.push({ buscaId: b.id, ...resultado, quantidade: b.quantidade ?? 20, parcial: b.so_sem_site && resultado.mantidas < (b.quantidade ?? 20), rodadaId: b.apify_run_id });
     } catch {
       await db.from("buscas").update({ status: "buscando" }).eq("id", b.id).eq("status", "importando");
     }
   }
   return importacoes;
+}
+
+async function limiteRodadaApify(runId: string): Promise<number | null> {
+  try {
+    const r = await fetch(`${APIFY}/actor-runs/${encodeURIComponent(runId)}/key-value-store/records/INPUT`, { headers: apifyHeaders() });
+    if (!r.ok) return null;
+    const entrada = (await r.json()) as { maxCrawledPlacesPerSearch?: unknown };
+    const limite = Number(entrada.maxCrawledPlacesPerSearch);
+    return Number.isInteger(limite) && limite > 0 ? limite : null;
+  } catch { return null; }
+}
+
+function entradaBuscaMaps(p: { nicho: string; cidade: string; estado: string; pais: string; limite: number }) {
+  return {
+    searchStringsArray: [p.nicho], locationQuery: `${p.cidade}, ${p.estado}, ${p.pais}`,
+    maxCrawledPlacesPerSearch: p.limite, language: "pt-BR", skipClosedPlaces: true,
+  };
 }
 
 async function importarItensMaps(b: { id: string; user_id: string; quantidade: number | null; cidade: string | null; estado: string | null; so_sem_site: boolean }, itens: ItemMaps[]) {
@@ -497,7 +544,7 @@ async function processarCnpj(tarefa: { id: string; lead_id: string; user_id: str
 // ───────────── Worker: chamado pelo agendamento e pela tela ─────────────
 export async function processarFila() {
   const inicio = Date.now();
-  const resumo = { runs: 0, sites: 0, buscasCnpj: 0, cnpj: "" as string, importacoes: [] as { buscaId: string; coletadas: number; unicas: number; mantidas: number }[] };
+  const resumo = { runs: 0, sites: 0, buscasCnpj: 0, cnpj: "" as string, importacoes: [] as { buscaId: string; coletadas: number; unicas: number; mantidas: number; quantidade: number; parcial: boolean; rodadaId: string | null }[] };
   resumo.importacoes = await acompanharRuns(); resumo.runs = 1;
   const { data: sites } = await db.rpc("reservar_tarefas", { _tipo: "site", _limite: 2 });
   for (const t of sites ?? []) { if (Date.now() - inicio > 60000) { await adiarTarefa(t.id, 5, false); continue; } await processarSite(t).catch(async () => { if (!await impedirTarefaInvalida(t)) await concluirTarefa(t.id); }); resumo.sites++; }
@@ -524,10 +571,8 @@ export async function criarBuscaMaps(userId: string, entrada: { cidade: string; 
   const { data: busca, error } = await db.from("buscas").insert({ user_id: userId, tipo: "maps", titulo: `${p.nicho} em ${p.cidade}/${p.estado}${soSemSite ? " (sem site)" : ""}`, ...p, so_sem_site: !!soSemSite, status: "iniciando" }).select("id").single();
   if (error || !busca) throw new Error("Não foi possível criar a busca.");
   try {
-    const run = await iniciarRunApify(cfg.mapsActor, {
-      searchStringsArray: [p.nicho], locationQuery: `${p.cidade}, ${p.estado}, ${p.pais}`,
-      maxCrawledPlacesPerSearch: Math.min(300, soSemSite ? p.quantidade * 3 : p.quantidade + Math.ceil(p.quantidade * 0.3)), language: "pt-BR", skipClosedPlaces: true,
-    }, cfg.maxChargeUsd);
+    const limiteInicial = soSemSite ? p.quantidade : p.quantidade + Math.ceil(p.quantidade * 0.3);
+    const run = await iniciarRunApify(cfg.mapsActor, entradaBuscaMaps({ ...p, limite: limiteInicial }), cfg.maxChargeUsd);
     await db.from("buscas").update({ status: "buscando", apify_run_id: run.runId, apify_dataset_id: run.datasetId }).eq("id", busca.id);
   } catch (e) {
     await db.from("buscas").update({ status: "erro", erro: e instanceof Error ? e.message : "Falha ao iniciar a busca" }).eq("id", busca.id);
@@ -910,7 +955,7 @@ async function processarCnpja(tarefa: { id: string; lead_id: string; user_id: st
     return;
   }
 
-  const termos = limparNome(lead.nome, lead.cidade);
+  const termos = limparNomeParaBuscaCnpja(lead.nome, lead.cidade);
   if (!termos) return fim({ cnpja_buscado: true, cnpj_status: "nao_encontrado", cnpj_motivo: "Nome muito genérico para buscar o CNPJ." });
 
   const saldoInfo = await saldoCnpja();

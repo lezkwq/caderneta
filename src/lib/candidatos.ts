@@ -18,6 +18,35 @@ export function limparNome(nome: string, cidade?: string | null): string {
   return termos.slice(0, 2).join(" ");
 }
 
+const PARTICULAS_NOME = new Set(["de", "da", "do", "das", "dos"]);
+const PREFIXO_DOUTOR = /^\s*dr(?:a|\(a\))?\.?\s+/i;
+
+/** Nome pessoal provável vindo do título Dr./Dra.; não representa dono confirmado. */
+export function responsavelProvavelMaps(nome: string): string | null {
+  const prefixo = PREFIXO_DOUTOR.exec(nome)?.[0];
+  if (!prefixo) return null;
+  const trecho = nome.slice(prefixo.length).split(/[-–—|:,/()]/, 1)[0] ?? "";
+  const palavras = trecho.match(/[\p{L}][\p{L}'’-]*/gu) ?? [];
+  const pessoa: string[] = [];
+  for (const palavra of palavras) {
+    const normalizada = normalizarTexto(palavra);
+    if (GENERICOS.has(normalizada) && !PARTICULAS_NOME.has(normalizada)) break;
+    pessoa.push(palavra);
+  }
+  if (pessoa.filter((p) => !PARTICULAS_NOME.has(normalizarTexto(p))).length < 2) return null;
+  return pessoa.join(" ");
+}
+
+/** Retira o nome provável do profissional antes de buscar e pontuar candidatos CNPJ. */
+export function limparNomeParaBuscaCnpja(nome: string, cidade?: string | null): string {
+  const prefixo = PREFIXO_DOUTOR.exec(nome)?.[0];
+  const pessoa = responsavelProvavelMaps(nome);
+  if (!prefixo || !pessoa) return limparNome(nome, cidade);
+  const pessoaRegex = pessoa.split(/\s+/).map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+");
+  const restante = nome.slice(prefixo.length).replace(new RegExp(`^${pessoaRegex}(?=\\s|$)`, "i"), " ").replace(/^\s*[-–—|:,]+\s*/, "");
+  return limparNome(restante, cidade);
+}
+
 export interface CandidatoCnpja {
   taxId: string;
   alias?: string | null;
@@ -95,7 +124,7 @@ function numeroDoEndereco(s: string): string | null {
 export function avaliar(lead: LeadParaComparar, c: CandidatoCnpja): Avaliacao {
   const motivos: string[] = [];
   const nomes = normalizarTexto(`${c.alias ?? ""} ${c.company?.name ?? ""}`);
-  const termos = limparNome(lead.nome).split(" ").filter(Boolean);
+  const termos = limparNomeParaBuscaCnpja(lead.nome).split(" ").filter(Boolean);
   const bateNome = termos.length > 0 && termos.every((t) => nomes.includes(t));
   if (bateNome) motivos.push("Nome parecido");
 
