@@ -110,3 +110,28 @@ export const infoSistema = createServerFn({ method: "POST" })
     const [apify, fila, hoje] = await Promise.all([s.testarApify(), s.previsaoFila(context.userId), s.contarBuscasHoje(context.userId)]);
     return { apify, fila, buscasHoje: hoje };
   });
+
+export const infoConfiguracoes = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async () => {
+    const s = await import("@/lib/caderneta.server");
+    const [apify, cnpja] = await Promise.all([s.testarApify(), s.statusConectorCnpja()]);
+    return { apify: apify.ok, cnpja: cnpja.ok, saldoCnpja: cnpja.saldo, motivos: { apify: apify.motivo, cnpja: cnpja.motivo } };
+  });
+
+export const salvarNichoCnae = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ nicho: texto(80), cnae: z.string().trim().min(7).max(12), descricao: z.string().trim().max(160).optional() }).parse(d))
+  .handler(async ({ data }) => {
+    const s = await import("@/lib/caderneta.server");
+    return s.salvarNichoCnae(data);
+  });
+
+export const excluirNichoCnae = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ nicho: texto(80) }).parse(d))
+  .handler(async ({ data }) => {
+    const s = await import("@/lib/caderneta.server");
+    await s.excluirNichoCnae(data.nicho);
+    return { ok: true };
+  });

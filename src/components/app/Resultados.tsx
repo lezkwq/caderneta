@@ -10,6 +10,7 @@ import { buscaQuery, perfilQuery } from "@/lib/queries";
 import { controlarBusca, escolherCnpjCandidato, informarCnpj, processarAgora, reconciliarCandidatosSalvos } from "@/lib/caderneta.functions";
 import { aplicarModelo, cnpjValido, formatarCnpj, formatarTelefone, linkWhatsApp } from "@/lib/br";
 import { responsavelProvavelMaps } from "@/lib/candidatos";
+import { agruparPorPessoa } from "@/lib/manual-utils";
 import type { Fonte, Motivo } from "@/lib/score";
 import { BadgeConfianca, Metric, Pill, SkeletonLinhas, StatusBusca, StatusCnpj } from "@/components/app/ui-bits";
 import { Field } from "@/components/app/Field";
@@ -150,7 +151,7 @@ export function Resultados({ buscaId }: { buscaId: string }) {
   }
 
   const grupos: [string, Lead[]][] = agrupar
-    ? [...leads.reduce((m, l) => m.set(l.pessoa || "Sem pessoa", [...(m.get(l.pessoa || "Sem pessoa") ?? []), l]), new Map<string, Lead[]>())]
+    ? agruparPorPessoa(leads)
     : [["", leads]];
 
   const props = { telsPorLead, aberto, setAberto, marcar, excluir, abrirWa: (lead: Lead, tel: Tel) => setWa({ lead, tel }), buscaId };

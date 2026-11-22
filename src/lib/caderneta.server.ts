@@ -8,6 +8,7 @@ import { decidir, desempatarCandidatosSalvos, ehSiteProprio, extrairCandidatosCn
 import { analisarHtml, baixarPagina, urlPermitida } from "@/lib/site-fetch.server";
 import { planejarProximaRodadaMaps, selecionarResultadosMaps, mapsResultKey } from "@/lib/maps-results";
 import { estimarFilaCnpjaSegundos, planejarCancelamentoFila, planejarExclusaoFila } from "@/lib/fila-utils";
+import { tarefasIniciaisManual } from "@/lib/manual-utils";
 
 const db = supabaseAdmin;
 type TarefaUpd = Database["public"]["Tables"]["tarefas"]["Update"];
@@ -43,6 +44,13 @@ export async function testarApify(): Promise<{ ok: boolean; motivo: string }> {
     const r = await fetch(`${APIFY}/users/me`, { headers: apifyHeaders() });
     return r.ok ? { ok: true, motivo: "" } : { ok: false, motivo: r.status === 401 ? "chave inválida" : `erro ${r.status}` };
   } catch { return { ok: false, motivo: "sem conexão" }; }
+}
+
+export async function statusConectorCnpja(): Promise<{ ok: boolean; saldo: number | null; motivo: string }> {
+  if (!process.env["CNPJA_API_KEY"]) return { ok: false, saldo: null, motivo: "não configurado" };
+  const resultado = await saldoCnpja();
+  if (resultado.saldo !== null) return { ok: true, saldo: resultado.saldo, motivo: "" };
+  return { ok: false, saldo: null, motivo: resultado.esperarSeg ? "limite global de consultas" : "sem resposta" };
 }
 
 export async function iniciarRunApify(actor: string, input: Record<string, unknown>, maxUsd: number) {
@@ -144,8 +152,9 @@ export async function recalcularScore(leadId: string, propagar = true) {
     for (const i of iguais ?? []) {
       const l = i.leads as unknown as { id: string; cnpj: string | null; dono: string | null; pessoa: string | null; socios: unknown };
       outrosLeads.add(l.id);
-      if (!l.cnpj || l.cnpj === lead.cnpj) continue;
-      porCnpj.set(l.cnpj, [...(porCnpj.get(l.cnpj) ?? []), ...pessoasDoLead(l)]);
+      if (l.cnpj && l.cnpj === lead.cnpj) continue;
+      const chave = l.cnpj ?? `lead:${l.id}`;
+      porCnpj.set(chave, [...(porCnpj.get(chave) ?? []), ...pessoasDoLead(l)]);
     }
     const r = calcularScore({
       tipo: t.tipo as "celular" | "fixo",
@@ -608,9 +617,7 @@ export async function criarBuscaManual(userId: string, empresas: EmpresaManual[]
     }).select("id").single();
     if (!lead) continue;
     if (maps) mapsUrls.push(maps);
-    if (cnpj) await enfileirar(userId, lead.id, "cnpj");
-    if (site) await enfileirar(userId, lead.id, "site");
-    else if (!cnpj && !maps) await enfileirar(userId, lead.id, "cnpja");
+    for (const tarefa of tarefasIniciaisManual({ cnpj, site, maps })) await enfileirar(userId, lead.id, tarefa);
     if (!maps) await atualizarEstadoLead(lead.id);
   }
   if (mapsUrls.length) {
@@ -915,6 +922,22 @@ async function cnaeDoNicho(nicho: string | null): Promise<string | null> {
   const { data } = await db.from("nicho_cnae").select("nicho, cnae");
   const n = normalizarTexto(nicho);
   return (data ?? []).find((r) => n === normalizarTexto(r.nicho) || n.includes(normalizarTexto(r.nicho)))?.cnae ?? null;
+}
+
+export async function salvarNichoCnae(entrada: { nicho: string; cnae: string; descricao?: string | undefined }) {
+  const cnae = entrada.cnae.replace(/\D/g, "");
+  if (!/^\d{7}$/.test(cnae)) throw new Error("Informe o CNAE com sete dígitos, por exemplo 8630-5/04.");
+  const { error } = await db.from("nicho_cnae").upsert({
+    nicho: entrada.nicho.trim().toLocaleLowerCase("pt-BR"), cnae,
+    descricao: entrada.descricao?.trim() || null,
+  }, { onConflict: "nicho" });
+  if (error) throw new Error("Não foi possível salvar o CNAE.");
+  return { ok: true };
+}
+
+export async function excluirNichoCnae(nicho: string) {
+  const { error } = await db.from("nicho_cnae").delete().eq("nicho", nicho);
+  if (error) throw new Error("Não foi possível excluir este nicho.");
 }
 
 async function processarCnpja(tarefa: { id: string; lead_id: string; user_id: string; tentativas: number }) {

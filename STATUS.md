@@ -10,20 +10,20 @@
 - Login, cadastro, recuperação de senha, onboarding, navegação e busca no Google Maps via Apify.
 - Fila com reserva via RPC, processamento incremental, CNPJ por BrasilAPI e fallback cnpj.ws, telefones, score e resultados.
 - CNPJá `/office`, `/credit` e `/zip`, cache permanente da consulta e limpeza/pontuação de candidatos estão implementados. O parser aceita a página de `OfficeDto` documentada (lista de registros) e a fixture cobre `taxId`, `address`, `phones`, `mainActivity`, `sideActivities` e `status`.
-- Busca opcional por empresas sem site próprio já existe no servidor, mas falta o controle na tela de nova busca.
+- Busca opcional por empresas sem site próprio já existe no servidor e na tela de nova busca.
 - Leitura de até três páginas de site, com timeout e limite de 1 MB; endereços privados literais são bloqueados, mas ainda falta proteção por resolução DNS para evitar SSRF.
-- Suporte de campos para `manual`, `historico` e `configuracoes` existe no banco/servidor, mas as três telas ainda são placeholders.
+- `/manual` e `/historico` já têm interface e processamento; `/configuracoes` edita perfil/mensagem, CNAE por nicho e mostra o estado dos conectores sem revelar chaves.
 
 ## Problemas confirmados / pendências
 - A confirmação exige nome compatível e telefone ou endereço correspondente; `/credit` falhando ou retornando saldo abaixo de 10 pausa novas pesquisas e evita consulta paga sem saldo conhecido.
 - A tentativa de pesquisa por lead é reservada antes da chamada para evitar pesquisa paga duplicada. Erros de rede, resposta inválida e HTTP 429 encerram aquela tentativa sem repetição.
 - A fixture segue o formato de resposta do contrato oficial; não foi possível validar a chamada ao vivo porque os Secrets do Lovable não estão disponíveis localmente.
-- WhatsApp considera apenas o telefone principal, não o melhor celular; falta o filtro “sem site / só rede social” e o rótulo “telefone da empresa” antes da identificação do dono.
-- /manual precisa formulário e submissão da lista; /historico precisa listar e reabrir buscas; /configuracoes precisa editar perfil e mensagem e exibir status dos conectores sem segredos.
+- WhatsApp usa o melhor celular; o filtro “sem site / só rede social” e o rótulo “telefone da empresa” já estão na lista.
+- As funções de cadastro manual, histórico, edição dos mapeamentos CNAE e status dos conectores estão disponíveis ao usuário.
 - O processamento da fila depende de uma chamada do navegador; para agendamento futuro será necessário configurar `pg_cron`/`pg_net` (ou cron externo) para chamar o endpoint protegido `processar-fila` periodicamente, com segredo mantido nos Secrets.
 
 ## Próximas fases
-- Implementar melhorias da lista/nova busca e concluir as telas pendentes.
+- Evoluir as melhorias da lista e da nova busca conforme validação no preview.
 - Não aplicar alterações de banco automaticamente. Se uma alteração de esquema for indispensável, criar migration e registrar aqui exatamente o que precisa ser aplicado.
 - Nas fases E e F, conferir visualmente o app em 375, 768 e 1440 px. A busca real depende dos Secrets e do preview no Lovable.
 
@@ -68,3 +68,11 @@
 - Nomes iniciados por Dr., Dra. ou Dr(a). exibem “Nome no Maps: ...” em cinza quando ainda não há dono validado. O valor é derivado do nome do Maps, não é gravado como dono e é removido dos termos de busca e pontuação CNPJá.
 - A tela acumula os resultados das rodadas pelo ID do run, sem contar uma resposta repetida duas vezes; ao parar abaixo da meta, mostra “Coletadas X, mantidas Y de Z pedidas.”
 - `bun run build`, `bun x tsc --noEmit` e `bun test` (36 testes) passaram nesta revisão.
+
+## Fase F — telas manual e configurações (2026-11-22)
+- `/manual` permite adicionar empresas com cidade, CNPJ opcional, Maps, site, Instagram, Facebook e Pessoa. Links sociais são guardados como fontes, sem raspagem; links do Maps usam o processamento por URL que já existia.
+- Empresas manuais são agrupadas pela Pessoa nos resultados. Telefones repetidos em empresas com Pessoa/sócios em comum aumentam a confiança e não entram na penalidade de provável contador.
+- CNPJ digitado manualmente segue para BrasilAPI/cnpj.ws, sem tarefa de busca por nome no CNPJá. A fila global do CNPJá continua reservando no máximo 10 chamadas por minuto e respeitando saldo mínimo de 10.
+- `/configuracoes` edita nome, ocupação e modelo de WhatsApp com `{empresa}`, permite editar os mapeamentos globais nicho→CNAE existentes e consulta Apify/CNPJá e saldo via servidor, sem exibir chaves.
+- Nenhuma alteração de esquema, migration, RLS ou dependências. `bun run build`, `bun test` (39 testes) e `bun x tsc --noEmit` passaram.
+- Verificação visual em 375/768/1440 px não realizada: Computer Use foi excluído e Playwright não está instalado; nenhuma dependência foi adicionada.
