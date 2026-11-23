@@ -9,6 +9,7 @@ import { analisarHtml, baixarPagina, urlPermitida } from "@/lib/site-fetch.serve
 import { planejarProximaRodadaMaps, selecionarResultadosMaps, mapsResultKey } from "@/lib/maps-results";
 import { estimarFilaCnpjaSegundos, planejarCancelamentoFila, planejarExclusaoFila } from "@/lib/fila-utils";
 import { tarefasIniciaisManual } from "@/lib/manual-utils";
+import { MENSAGEM_OWNER_PENDENTE, buscaPertenceAoUsuario as pertenceAoUsuarioPorId } from "@/lib/owner-access";
 
 const db = supabaseAdmin;
 type TarefaUpd = Database["public"]["Tables"]["tarefas"]["Update"];
@@ -191,9 +192,12 @@ async function atualizarEstadoBusca(buscaId: string) {
 }
 
 // ───────────── Etapa 1: acompanhar runs do Apify ─────────────
-async function acompanharRuns() {
+async function acompanharRuns(escopo?: { userId: string; buscaId: string }) {
   const importacoes: { buscaId: string; coletadas: number; unicas: number; mantidas: number; quantidade: number; parcial: boolean; rodadaId: string | null }[] = [];
-  const { data: buscas } = await db.from("buscas").select("*").eq("status", "buscando").not("apify_run_id", "is", null).order("updated_at").limit(3);
+  const buscaQuery = db.from("buscas").select("*").eq("status", "buscando").not("apify_run_id", "is", null);
+  const { data: buscas } = await (escopo
+    ? buscaQuery.eq("id", escopo.buscaId).eq("user_id", escopo.userId).order("updated_at").limit(1)
+    : buscaQuery.order("updated_at").limit(3));
   for (const b of buscas ?? []) {
     try {
       const r = await fetch(`${APIFY}/actor-runs/${encodeURIComponent(b.apify_run_id as string)}`, { headers: apifyHeaders() });
@@ -551,17 +555,27 @@ async function processarCnpj(tarefa: { id: string; lead_id: string; user_id: str
 }
 
 // ───────────── Worker: chamado pelo agendamento e pela tela ─────────────
-export async function processarFila() {
+export async function buscaPertenceAoUsuario(userId: string, buscaId: string): Promise<boolean> {
+  const { data } = await db.from("buscas").select("user_id").eq("id", buscaId).maybeSingle();
+  return pertenceAoUsuarioPorId(data?.user_id, userId);
+}
+
+export async function processarFila(escopo?: { userId: string; buscaId: string }) {
+  if (!process.env["OWNER_EMAIL"]?.trim()) throw new Error(MENSAGEM_OWNER_PENDENTE);
+  if (escopo && !await buscaPertenceAoUsuario(escopo.userId, escopo.buscaId)) throw new Error("Acesso restrito");
+  const reservarTarefas = (tipo: string, limite: number) => escopo
+    ? db.rpc("reservar_tarefas_da_busca", { _tipo: tipo, _limite: limite, _user_id: escopo.userId, _busca_id: escopo.buscaId })
+    : db.rpc("reservar_tarefas", { _tipo: tipo, _limite: limite });
   const inicio = Date.now();
   const resumo = { runs: 0, sites: 0, buscasCnpj: 0, cnpj: "" as string, importacoes: [] as { buscaId: string; coletadas: number; unicas: number; mantidas: number; quantidade: number; parcial: boolean; rodadaId: string | null }[] };
-  resumo.importacoes = await acompanharRuns(); resumo.runs = 1;
-  const { data: sites } = await db.rpc("reservar_tarefas", { _tipo: "site", _limite: 2 });
+  resumo.importacoes = await acompanharRuns(escopo); resumo.runs = 1;
+  const { data: sites } = await reservarTarefas("site", 2);
   for (const t of sites ?? []) { if (Date.now() - inicio > 60000) { await adiarTarefa(t.id, 5, false); continue; } await processarSite(t).catch(async () => { if (!await impedirTarefaInvalida(t)) await concluirTarefa(t.id); }); resumo.sites++; }
-  const { data: bcs } = await db.rpc("reservar_tarefas", { _tipo: "busca_cnpj", _limite: 1 });
+  const { data: bcs } = await reservarTarefas("busca_cnpj", 1);
   for (const t of bcs ?? []) { await processarBuscaCnpj(t).catch(async () => { if (!await impedirTarefaInvalida(t)) await concluirTarefa(t.id); }); resumo.buscasCnpj++; }
-  const { data: cja } = await db.rpc("reservar_tarefas", { _tipo: "cnpja", _limite: 1 });
+  const { data: cja } = await reservarTarefas("cnpja", 1);
   for (const t of cja ?? []) await processarCnpja({ ...t, tentativas: t.tentativas }).catch(async () => { if (!await impedirTarefaInvalida(t)) await adiarTarefa(t.id, 120); });
-  const { data: cn } = await db.rpc("reservar_tarefas", { _tipo: "cnpj", _limite: 1 });
+  const { data: cn } = await reservarTarefas("cnpj", 1);
   for (const t of cn ?? []) resumo.cnpj = await processarCnpj(t).catch(() => { void adiarTarefa(t.id, 60); return "falha"; });
   return resumo;
 }
@@ -762,7 +776,7 @@ export async function excluirBusca(userId: string, buscaId: string) {
   if (error) throw new Error("Não foi possível excluir a busca.");
 }
 
-export async function previsaoFila(userId?: string, buscaId?: string) {
+export async function previsaoFila(userId?: string, buscaId?: string, somenteEstaBusca = false) {
   const cfg = await lerConfig();
   const [{ data: tarefas }, { data: est }, { data: estCnpja }, { data: credito }] = await Promise.all([
     db.from("tarefas").select("id, lead_id, user_id, tipo, status, executar_apos").in("tipo", ["cnpj", "cnpja"]).in("status", ["pendente", "em_processamento"]),
@@ -785,14 +799,21 @@ export async function previsaoFila(userId?: string, buscaId?: string) {
   });
   const invalidIds = invalidas.map((t) => t.id);
   if (invalidIds.length) await db.from("tarefas").update({ status: "cancelada", reservado_em: null }).in("id", invalidIds);
-  const filaGlobal = filaBruta.filter((t) => {
+  let filaGlobal = filaBruta.filter((t) => {
     const lead = porLead.get(t.lead_id);
     return !!lead && !["cancelada", "pausada", "erro"].includes(lead.status);
   });
+  if (somenteEstaBusca && userId && buscaId) filaGlobal = filaGlobal.filter((t) => {
+    const lead = porLead.get(t.lead_id);
+    return lead?.userId === userId && lead.buscaId === buscaId;
+  });
   const filaCnpja = filaGlobal.filter((t) => t.tipo === "cnpja");
   const filaCnpj = filaGlobal.filter((t) => t.tipo === "cnpj");
-  const destaBusca = userId && buscaId ? filaCnpja.filter((t) => porLead.get(t.lead_id)?.buscaId === buscaId).length : 0;
-  const outrasBuscas = userId && buscaId ? filaCnpja.filter((t) => {
+  const destaBusca = userId && buscaId ? filaCnpja.filter((t) => {
+    const lead = porLead.get(t.lead_id);
+    return lead?.userId === userId && lead.buscaId === buscaId;
+  }).length : 0;
+  const outrasBuscas = !somenteEstaBusca && userId && buscaId ? filaCnpja.filter((t) => {
     const lead = porLead.get(t.lead_id);
     return lead?.userId === userId && lead.buscaId !== buscaId;
   }).length : 0;

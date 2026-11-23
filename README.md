@@ -2,20 +2,8 @@
 
 Você vai construir a CADERNETA, uma ferramenta web (PC e celular) para um profissional que vende sites e precisa achar o contato direto do dono de empresas locais. A Caderneta NÃO cria sites. Interface toda em português do Brasil.
 
-══ ETAPA 0 — CHAVES (faça isto ANTES de escrever qualquer código) ══
-Não construa nada até concluir esta etapa. Peça os itens abaixo UM POR VEZ, esperando minha resposta entre eles.
-
-Regras para todas as chaves:
-- Use o formulário seguro de secrets da plataforma. Nunca me peça para colar a chave no chat. Se a plataforma não tiver formulário seguro, avise e pare.
-- A chave fica só no backend (secrets das edge functions). Nunca no front-end, nunca no código, nunca em arquivo .env versionado, nunca em logs, nunca devolvida em nenhuma resposta de API.
-- Depois de cada chave, me diga exatamente: (1) o nome do secret, (2) onde ele está guardado, (3) como eu verifico isso sozinho no painel.
-- Faça uma chamada de teste a partir de uma edge function e me responda só "funcionou" ou "falhou: motivo". Nunca mostre a chave.
-
-Ordem:
-1. APIFY_TOKEN (obrigatório). Explique onde pegar: Apify → Settings → API & Integrations.
-2. Login com Google: se a plataforma oferecer Google nativo sem credenciais próprias, use e me diga. Se não, peça GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET (Google Cloud Console → credenciais OAuth) e configure o provedor, explicando a URL de redirecionamento que devo cadastrar.
-3. CNPJWS_TOKEN (opcional). A API pública do cnpj.ws não exige chave. Pergunte se quero pular. Se pular, siga sem ele.
-Ao fim, me entregue uma lista: cada chave, status e onde está. Só então comece a construir.
+══ SEGREDOS ══
+`APIFY_TOKEN`, `CNPJA_API_KEY` e `OWNER_EMAIL` são configurados somente nos Secrets do Lovable Cloud e usados apenas pelo servidor. Nunca coloque secrets no front-end, código, `.env` versionado, logs ou respostas de API. `OWNER_EMAIL` deve conter o e-mail verificado da conta proprietária. Novos cadastros devem ser desativados nas configurações de autenticação do Lovable Cloud, se essa opção estiver disponível.
 
 ══ DESIGN: como usar o arquivo anexo ══
 O .md anexo (Design_System_ZIXO_Auditoria.md) é referência visual de OUTRO produto (um banco). Extraia somente: estrutura de navegação lateral com item ativo escuro, cards claros com sombra suave, botões e badges em formato pílula, ícones outline monocromáticos, barra inferior no celular, cartões de métrica. IGNORE: o nome ZIXO, todo o texto e números de exemplo, renders 3D, fotos, cartões bancários, personas, a fonte Roobert, a fonte serifada e a grade desktop com margem de 120px.
@@ -31,7 +19,7 @@ Tokens (os 4 primeiros hex são exatos do arquivo; os demais são estimados ou d
 - Ícones: biblioteca outline (Lucide).
 
 ══ AUTENTICAÇÃO ══
-Somente dois métodos: Google e e-mail+senha com confirmação por e-mail (a conta só ativa após clicar no link). Telas: /login (no topo, uma apresentação curta da Caderneta: "acha o telefone certo do dono de empresas locais"), cadastro, esqueci a senha e redefinir senha. Toda rota exceto as de autenticação exige login.
+Login somente com e-mail e senha. Telas: /login (apresentação curta da Caderneta: "acha o telefone certo do dono de empresas locais"), esqueci a senha e redefinir senha. A rota antiga /cadastro redireciona para /login. Toda rota do app exige sessão; recursos privilegiados também validam no servidor o proprietário em OWNER_EMAIL.
 
 ══ TELAS ══
 Primeiro acesso: pergunte "Qual seu nome?" e "Com o que você trabalha?", salve no perfil e nunca pergunte de novo (editável em Configurações).

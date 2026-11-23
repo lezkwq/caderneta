@@ -8,8 +8,8 @@ export const Route = createFileRoute("/api/public/processar-fila")({
         const falha = await authenticateCronRequest(request);
         if (falha) return falha;
         const { processarFila } = await import("@/lib/caderneta.server");
-        const r = await processarFila();
-        return Response.json({ ok: true, ...r });
+        await processarFila();
+        return Response.json({ ok: true });
       },
     },
   },

@@ -422,6 +422,26 @@ export type Database = {
     }
     Functions: {
       reservar_slot_cnpj: { Args: { _intervalo_seg: number }; Returns: boolean }
+      reservar_tarefas_da_busca: {
+        Args: { _busca_id: string; _limite: number; _tipo: string; _user_id: string }
+        Returns: {
+          created_at: string
+          executar_apos: string
+          id: string
+          lead_id: string
+          reservado_em: string | null
+          status: string
+          tentativas: number
+          tipo: string
+          user_id: string
+        }[]
+        SetofOptions: {
+          from: "tarefas"
+          to: "tarefas"
+          isOneToOne: false
+          isSetofReturn: true
+        }
+      }
       reservar_tarefas: {
         Args: { _limite: number; _tipo: string }
         Returns: {

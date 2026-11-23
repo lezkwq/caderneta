@@ -1,12 +1,9 @@
-// Busca segura de páginas: só http/https, sem IPs privados, timeout 8s, até 1 MB.
-const MAX_BYTES = 1024 * 1024;
+import { promises as dns } from "node:dns";
+import { isIP } from "node:net";
+import { ipPrivadoLocalOuReservado } from "@/lib/network-guards";
 
-function ipv4Privado(h: string): boolean {
-  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (!m) return false;
-  const [a, b] = [Number(m[1]), Number(m[2])];
-  return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || (a === 198 && (b === 18 || b === 19));
-}
+// Busca segura de páginas: valida IPs literais e DNS antes de cada acesso/redirecionamento.
+const MAX_BYTES = 1024 * 1024;
 
 export function urlPermitida(raw: string): URL | null {
   let u: URL;
@@ -17,13 +14,36 @@ export function urlPermitida(raw: string): URL | null {
   if (!h.includes(".") || h === "localhost" || /\.(localhost|local|internal|lan|home|arpa)$/.test(h)) return null;
   if (h.startsWith("[") || h.includes(":")) return null; // IPv6 literal
   if (/^\d+$/.test(h) || /^0x/i.test(h)) return null;
-  if (ipv4Privado(h)) return null;
+  if (isIP(h) === 4 && ipPrivadoLocalOuReservado(h)) return null;
   return u;
+}
+
+async function hostnamePublico(hostname: string): Promise<boolean> {
+  if (isIP(hostname)) return !ipPrivadoLocalOuReservado(hostname);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const resolucao = Promise.allSettled([dns.resolve4(hostname), dns.resolve6(hostname)]);
+    const resultados = await Promise.race([
+      resolucao,
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("DNS timeout")), 5000); }),
+    ]);
+    const ips: string[] = [];
+    for (const resultado of resultados) {
+      if (resultado.status === "fulfilled") ips.push(...resultado.value);
+      else {
+        const codigo = (resultado.reason as NodeJS.ErrnoException | undefined)?.code;
+        if (codigo !== "ENODATA") return false;
+      }
+    }
+    return ips.length > 0 && ips.every((ip) => !ipPrivadoLocalOuReservado(ip));
+  } catch { return false; }
+  finally { if (timer) clearTimeout(timer); }
 }
 
 export async function baixarPagina(raw: string): Promise<{ url: string; html: string } | null> {
   let atual = urlPermitida(raw);
   for (let salto = 0; atual && salto < 4; salto++) {
+    if (!await hostnamePublico(atual.hostname)) return null;
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 8000);
     try {

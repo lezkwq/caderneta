@@ -7,7 +7,7 @@
 - `git pull --ff-only`: sem alterações remotas antes da auditoria.
 
 ## Existe no código
-- Login, cadastro, recuperação de senha, onboarding, navegação e busca no Google Maps via Apify.
+- Login por e-mail e senha, recuperação de senha, onboarding, navegação e busca no Google Maps via Apify.
 - Fila com reserva via RPC, processamento incremental, CNPJ por BrasilAPI e fallback cnpj.ws, telefones, score e resultados.
 - CNPJá `/office`, `/credit` e `/zip`, cache permanente da consulta e limpeza/pontuação de candidatos estão implementados. O parser aceita a página de `OfficeDto` documentada (lista de registros) e a fixture cobre `taxId`, `address`, `phones`, `mainActivity`, `sideActivities` e `status`.
 - Busca opcional por empresas sem site próprio já existe no servidor e na tela de nova busca.
@@ -19,7 +19,7 @@
 - A tentativa de pesquisa por lead é reservada antes da chamada para evitar pesquisa paga duplicada. Erros de rede, resposta inválida e HTTP 429 encerram aquela tentativa sem repetição.
 - A fixture segue o formato de resposta do contrato oficial; não foi possível validar a chamada ao vivo porque os Secrets do Lovable não estão disponíveis localmente.
 - WhatsApp usa o melhor celular; o filtro “sem site / só rede social” e o rótulo “telefone da empresa” já estão na lista.
-- As funções de cadastro manual, histórico, edição dos mapeamentos CNAE e status dos conectores estão disponíveis ao usuário.
+- As funções de inclusão manual de empresas, histórico, edição dos mapeamentos CNAE e status dos conectores estão disponíveis ao proprietário.
 - O processamento da fila depende de uma chamada do navegador; para agendamento futuro será necessário configurar `pg_cron`/`pg_net` (ou cron externo) para chamar o endpoint protegido `processar-fila` periodicamente, com segredo mantido nos Secrets.
 
 ## Próximas fases
@@ -76,3 +76,15 @@
 - `/configuracoes` edita nome, ocupação e modelo de WhatsApp com `{empresa}`, permite editar os mapeamentos globais nicho→CNAE existentes e consulta Apify/CNPJá e saldo via servidor, sem exibir chaves.
 - Nenhuma alteração de esquema, migration, RLS ou dependências. `bun run build`, `bun test` (39 testes) e `bun x tsc --noEmit` passaram.
 - Verificação visual em 375/768/1440 px não realizada: Computer Use foi excluído e Playwright não está instalado; nenhuma dependência foi adicionada.
+
+## Login e segurança (2026-11-22)
+- `/login` oferece e-mail, senha, Entrar e Esqueci a senha. O cadastro por interface e OAuth foram removidos; `/cadastro` ficou como rota mínima que redireciona para `/login`. Mensagens de login não revelam se o e-mail existe.
+- Logout abre confirmação acessível, com foco inicial em Cancelar, Escape para cancelar e botões com altura mínima de 44 px.
+- O servidor confere por `auth.getUser(token)` que a sessão tem e-mail verificado e compara sem diferenciar maiúsculas/minúsculas com o secret `OWNER_EMAIL`. Secret ausente bloqueia acesso privilegiado; o app mostra aviso de configuração pendente e só permite sair. Buscas, fila interativa, CNPJ, ações de histórico, CNAE e status dos conectores exigem o proprietário. RLS continua responsável por isolar leituras.
+- `processarAgora` valida o dono da busca, reserva tarefas somente daquela busca e devolve apenas importações dela. A função de fila automática permanece escopada pelo segredo de cron e processa globalmente sem responder dados da fila ao navegador.
+- A tabela `nicho_cnae` mantém leitura autenticada; gravação/remoção ocorre somente pelos handlers protegidos do proprietário.
+- A leitura de sites resolve A e AAAA e bloqueia destinos privados, locais ou reservados antes de cada requisição e redirecionamento. O runtime Cloudflare configurado dá suporte a `node:dns`; resolução não fixa o endereço no transporte, então há a limitação inerente de uma janela TOCTOU entre DNS e conexão.
+- Foi criada a migration `drizzle/migrations/0003_owner_queue_scope.sql` para reservar atomicamente tarefas de uma busca específica do usuário no worker interativo. Ela precisa ser aplicada no Lovable Cloud antes de `processarAgora` por busca funcionar; não foi aplicada automaticamente. Não houve mudança em tabelas, colunas ou políticas RLS.
+- O cadastro público não pode ser desativado com segurança apenas pela interface; desative novos cadastros nas configurações de autenticação do Lovable Cloud, se houver essa opção.
+- A busca no repositório encontrou a página antiga de cadastro com `signUp`, botão Google/OAuth, link de criação de conta e documentação de autenticação desatualizada. A página e o componente Google foram removidos, e a rota antiga agora redireciona; referências de “cadastro” que restam descrevem cadastro fiscal/manual, não criação de conta.
+- Testes de autorização (dono, usuário diferente, secret ausente, e-mail sem distinção de caixa e propriedade da busca) e bloqueio de IP/URL foram adicionados. `vitest run` (67 testes), `tsc --noEmit` e build de produção passaram.
